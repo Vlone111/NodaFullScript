@@ -346,6 +346,7 @@ do_rollback() {
   warn 'Останавливаю только контейнеры, созданные этим установщиком.'
   docker compose -f "${INSTALL_DIR}/docker-compose.node.yml" down 2>/dev/null || true
   docker compose -f "${INSTALL_DIR}/docker-compose.edge.yml" down 2>/dev/null || true
+  docker compose -f "${INSTALL_DIR}/monitoring/docker-compose.yml" down 2>/dev/null || true
   rm -f /etc/cron.d/rw-edge-certs
   log 'Контейнеры остановлены, cron-хук снят.'
   printf '\n  Намеренно НЕ тронуто: файлы в %s, тома Caddy с сертификатами,\n' "${INSTALL_DIR}"
@@ -368,6 +369,9 @@ ${SELF_CMD} — rw-edge installer ${SCRIPT_VERSION}
 
 Переменные окружения:
   RW_ENABLE_UFW=1     включить UFW без интерактивного подтверждения
+  RW_METRICS_URL=...  адрес remoteWrite; задан — метрики включаются без вопроса
+  RW_METRICS_USER=...
+  RW_METRICS_PASS=...
   RW_ACME_STAGING=1   ACME staging: недоверенные сертификаты, без лимитов (тесты)
 EOF
 }
@@ -385,6 +389,7 @@ main() {
       ask_domains
       verify_dns
       ask_site
+      ask_monitoring
       pull_images
       generate_material
 
@@ -398,6 +403,7 @@ main() {
       render_caddyfile
       render_compose
       render_client_template
+      render_monitoring
       save_state
 
       tune_kernel
@@ -407,7 +413,9 @@ main() {
       wait_for_certs
       validate_artifacts
       deploy_node
+      deploy_monitoring
       verify_runtime
+      verify_monitoring
 
       printf '\n'
       log 'Серверная часть готова.'
@@ -415,7 +423,8 @@ main() {
       ;;
     verify)
       load_state || die "Нет состояния в ${STATE_FILE}. Сначала запустите install."
-      verify_runtime ;;
+      verify_runtime
+      verify_monitoring ;;
     steps)
       load_state || die "Нет состояния в ${STATE_FILE}."
       print_instructions ;;

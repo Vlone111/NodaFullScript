@@ -27,6 +27,8 @@ readonly STATE_FILE="${PRIVATE_DIR}/state.env"
 readonly NODE_IMAGE='remnawave/node@sha256:03f14935751b4ab565181e2b1766ccd1a9ac349d6839acd3ee49014e543fa232'
 readonly CADDY_IMAGE='caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648'
 readonly HAPROXY_IMAGE='haproxy@sha256:79799e8b2977e60802774fa53d29e6b54e045402cdd8a8b9fe43923e7095a047'
+readonly NODE_EXPORTER_IMAGE='prom/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a'
+readonly VMAGENT_IMAGE='victoriametrics/vmagent@sha256:d564816bfef75b275c4032d681e4b5a8b9f8b3c1ca5381c40612a70bdb17afda'
 
 # Loopback backends. Nothing here is ever exposed by the firewall.
 readonly PORT_CADDY_TLS=19443       # Caddy TLS: cover site + h2c origins + ACME
@@ -198,6 +200,8 @@ save_state() {
     printf 'XHTTP_PATH=%q\n' "${XHTTP_PATH}"
     printf 'GRPC_SERVICE=%q\n' "${GRPC_SERVICE}"
     printf 'BORROW_SNI=%q\n' "${BORROW_SNI:-}"
+    printf 'METRICS_URL=%q\n' "${METRICS_URL:-}"
+    printf 'METRICS_USER=%q\n' "${METRICS_USER:-}"
     local v
     for v in "${SELECTED[@]}"; do
       printf 'DOMAIN_%s=%q\n' "${v//-/_}" "${DOMAINS[$v]:-}"
