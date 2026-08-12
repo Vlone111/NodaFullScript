@@ -263,16 +263,45 @@ ask_site() {
 generate_material() {
   section 'Генерация ключей и путей'
 
-  local keys
-  keys="$(docker run --rm --pull never --network none --cap-drop ALL --read-only \
-    --entrypoint /usr/local/bin/xray "${NODE_IMAGE}" x25519)"
-  REALITY_PRIVATE_KEY="$(printf '%s\n' "${keys}" | sed -nE 's/^(PrivateKey|Private key):[[:space:]]*//p' | head -n1)"
-  REALITY_PUBLIC_KEY="$(printf '%s\n' "${keys}" | sed -nE 's/^(Password \(PublicKey\)|Password|PublicKey|Public key):[[:space:]]*//p' | head -n1)"
-  [[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] || die 'Xray не выдал пару ключей REALITY.'
+  # Only what the selected transports actually consume. Generating everything
+  # unconditionally is harmless in the configs but makes the summary claim work
+  # that was never needed, and an installer whose output cannot be trusted is
+  # worse than one that says less.
+  REALITY_PRIVATE_KEY=''
+  REALITY_PUBLIC_KEY=''
+  REALITY_SHORT_ID=''
+  XHTTP_PATH=''
+  GRPC_SERVICE=''
 
-  REALITY_SHORT_ID="$(rand_hex 8)"
-  XHTTP_PATH="/api/v1/$(rand_hex 24)/"
-  GRPC_SERVICE="api.v1.$(rand_hex 6)"
+  local made=()
 
-  log 'REALITY-пара, short ID, XHTTP-путь и gRPC-сервис сгенерированы.'
+  if has_variant reality-tcp-steal || has_variant reality-tcp-borrow \
+     || has_variant reality-xhttp-steal; then
+    local keys
+    keys="$(docker run --rm --pull never --network none --cap-drop ALL --read-only \
+      --entrypoint /usr/local/bin/xray "${NODE_IMAGE}" x25519)"
+    REALITY_PRIVATE_KEY="$(printf '%s\n' "${keys}" | sed -nE 's/^(PrivateKey|Private key):[[:space:]]*//p' | head -n1)"
+    REALITY_PUBLIC_KEY="$(printf '%s\n' "${keys}" | sed -nE 's/^(Password \(PublicKey\)|Password|PublicKey|Public key):[[:space:]]*//p' | head -n1)"
+    [[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] \
+      || die 'Xray не выдал пару ключей REALITY.'
+    REALITY_SHORT_ID="$(rand_hex 8)"
+    made+=('пара ключей REALITY и short ID')
+  fi
+
+  if has_variant reality-xhttp-steal || has_variant xhttp-tls; then
+    XHTTP_PATH="/api/v1/$(rand_hex 24)/"
+    made+=('XHTTP-путь')
+  fi
+
+  if has_variant grpc-tls; then
+    GRPC_SERVICE="api.v1.$(rand_hex 6)"
+    made+=('имя gRPC-сервиса')
+  fi
+
+  if (( ${#made[@]} )); then
+    local item
+    for item in "${made[@]}"; do log "Сгенерировано: ${item}"; done
+  else
+    info 'Генерировать нечего: выбранным транспортам ключи и пути не нужны.'
+  fi
 }
