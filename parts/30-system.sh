@@ -108,7 +108,9 @@ setup_firewall() {
   [[ "${ssh_port}" =~ ^[0-9]+$ ]] || ssh_port=22
   info "SSH определён на порту ${ssh_port}."
 
-  ufw --force reset >/dev/null 2>&1 || true
+  # Deliberately no `ufw --force reset`: it silently deletes every rule already
+  # on the host, including ones this installer knows nothing about. Rules are
+  # added instead, and ufw itself is idempotent about duplicates.
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
 

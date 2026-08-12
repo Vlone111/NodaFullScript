@@ -72,7 +72,7 @@ ask_panel() {
     warn 'Это не похоже на SECRET_KEY Remnawave (base64 с nodeCertPem/nodeKeyPem). Повторите.'
   done
 
-  ACME_EMAIL="$(ask 'E-mail для Let'\''s Encrypt (уведомления об истечении)' "admin@${PANEL_IPV4}.nip.io")"
+  ACME_EMAIL="$(ask 'E-mail для Let'\''s Encrypt' "admin@${PANEL_IPV4}.nip.io")"
   NODE_CODE="$(ask 'Короткий код узла для тегов (A-Z0-9)' 'EDGE1')"
   NODE_CODE="${NODE_CODE^^}"
   NODE_CODE="${NODE_CODE//[^A-Z0-9]/}"

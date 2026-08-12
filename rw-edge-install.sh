@@ -119,13 +119,20 @@ self_install() {
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Нет команды '$1'. Установите её и повторите."; }
 
 # ask <prompt> <default> -> echoes answer
+#
+# The default goes on its own line. Long prompt plus long default reaches the
+# 80-column boundary and the terminal truncates it mid-word, which looks like
+# the installer corrupted its own output. The prompt is written to stderr so
+# command substitution captures only the answer.
 ask() {
   local prompt="$1" default="${2:-}" reply
   if [[ -n "${default}" ]]; then
-    read -r -p "${prompt} [${default}]: " reply </dev/tty || true
+    printf '%s\n  [%s]: ' "${prompt}" "${default}" >&2
+    read -r reply </dev/tty || true
     printf '%s' "${reply:-${default}}"
   else
-    read -r -p "${prompt}: " reply </dev/tty || true
+    printf '%s: ' "${prompt}" >&2
+    read -r reply </dev/tty || true
     printf '%s' "${reply}"
   fi
 }
@@ -286,7 +293,7 @@ ask_panel() {
     warn 'Это не похоже на SECRET_KEY Remnawave (base64 с nodeCertPem/nodeKeyPem). Повторите.'
   done
 
-  ACME_EMAIL="$(ask 'E-mail для Let'\''s Encrypt (уведомления об истечении)' "admin@${PANEL_IPV4}.nip.io")"
+  ACME_EMAIL="$(ask 'E-mail для Let'\''s Encrypt' "admin@${PANEL_IPV4}.nip.io")"
   NODE_CODE="$(ask 'Короткий код узла для тегов (A-Z0-9)' 'EDGE1')"
   NODE_CODE="${NODE_CODE^^}"
   NODE_CODE="${NODE_CODE//[^A-Z0-9]/}"
@@ -1146,7 +1153,9 @@ setup_firewall() {
   [[ "${ssh_port}" =~ ^[0-9]+$ ]] || ssh_port=22
   info "SSH определён на порту ${ssh_port}."
 
-  ufw --force reset >/dev/null 2>&1 || true
+  # Deliberately no `ufw --force reset`: it silently deletes every rule already
+  # on the host, including ones this installer knows nothing about. Rules are
+  # added instead, and ufw itself is idempotent about duplicates.
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
 

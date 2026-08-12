@@ -119,13 +119,20 @@ self_install() {
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Нет команды '$1'. Установите её и повторите."; }
 
 # ask <prompt> <default> -> echoes answer
+#
+# The default goes on its own line. Long prompt plus long default reaches the
+# 80-column boundary and the terminal truncates it mid-word, which looks like
+# the installer corrupted its own output. The prompt is written to stderr so
+# command substitution captures only the answer.
 ask() {
   local prompt="$1" default="${2:-}" reply
   if [[ -n "${default}" ]]; then
-    read -r -p "${prompt} [${default}]: " reply </dev/tty || true
+    printf '%s\n  [%s]: ' "${prompt}" "${default}" >&2
+    read -r reply </dev/tty || true
     printf '%s' "${reply:-${default}}"
   else
-    read -r -p "${prompt}: " reply </dev/tty || true
+    printf '%s: ' "${prompt}" >&2
+    read -r reply </dev/tty || true
     printf '%s' "${reply}"
   fi
 }
