@@ -28,6 +28,7 @@ readonly NODE_IMAGE='remnawave/node@sha256:03f14935751b4ab565181e2b1766ccd1a9ac3
 readonly CADDY_IMAGE='caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648'
 readonly HAPROXY_IMAGE='haproxy@sha256:79799e8b2977e60802774fa53d29e6b54e045402cdd8a8b9fe43923e7095a047'
 readonly NODE_EXPORTER_IMAGE='prom/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a'
+readonly BLACKBOX_IMAGE='prom/blackbox-exporter@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc'
 readonly VMAGENT_IMAGE='victoriametrics/vmagent@sha256:d564816bfef75b275c4032d681e4b5a8b9f8b3c1ca5381c40612a70bdb17afda'
 
 # Loopback backends. Nothing here is ever exposed by the firewall.
@@ -127,7 +128,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Нет команды '$1'.
 # the installer corrupted its own output. The prompt is written to stderr so
 # command substitution captures only the answer.
 ask() {
-  local prompt="$1" default="${2:-}" reply
+  local prompt="$1" default="${2:-}" reply=''
   if [[ -n "${default}" ]]; then
     printf '%s\n  [%s]: ' "${prompt}" "${default}" >&2
     read -r reply </dev/tty || true
@@ -149,21 +150,21 @@ ask_required() {
 }
 
 ask_secret() {
-  local prompt="$1" reply
+  local prompt="$1" reply=''
   read -r -s -p "${prompt}: " reply </dev/tty || true
   printf '\n' >&2
   printf '%s' "${reply}"
 }
 
 confirm() {
-  local prompt="$1" reply
+  local prompt="$1" reply=''
   read -r -p "${prompt} [y/N]: " reply </dev/tty || true
   [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
 confirm_typed() {
   # Destructive or outward-facing steps require typing the word, not a keypress.
-  local prompt="$1" word="$2" reply
+  local prompt="$1" word="$2" reply=''
   read -r -p "${prompt} (введите ${word}): " reply </dev/tty || true
   [[ "${reply}" == "${word}" ]]
 }

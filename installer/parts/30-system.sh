@@ -183,9 +183,16 @@ for domain in "$@"; do
   fi
 done
 
-# Xray reloads certificate files by itself because oneTimeLoading is false,
-# so a restart is deliberately not triggered here.
-exit $(( changed == 1 ? 0 : 0 ))
+# Xray does NOT pick up a replaced certificate file on its own, despite
+# oneTimeLoading:false — verified on 26.6.27: after the files on disk were
+# swapped it kept serving the previous certificate until the process restarted.
+# Without this restart a renewal 60 days from now would leave tcp-tls and
+# hysteria2 presenting an expired certificate, and nothing would report it.
+if (( changed == 1 )); then
+  echo "certificates changed, restarting node so Xray picks them up"
+  docker restart rw-node >/dev/null 2>&1 || echo "could not restart rw-node" >&2
+fi
+exit 0
 EOF
   chmod 0755 "${sync}"
 

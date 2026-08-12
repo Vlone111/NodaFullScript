@@ -28,6 +28,7 @@ readonly NODE_IMAGE='remnawave/node@sha256:03f14935751b4ab565181e2b1766ccd1a9ac3
 readonly CADDY_IMAGE='caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648'
 readonly HAPROXY_IMAGE='haproxy@sha256:79799e8b2977e60802774fa53d29e6b54e045402cdd8a8b9fe43923e7095a047'
 readonly NODE_EXPORTER_IMAGE='prom/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a'
+readonly BLACKBOX_IMAGE='prom/blackbox-exporter@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc'
 readonly VMAGENT_IMAGE='victoriametrics/vmagent@sha256:d564816bfef75b275c4032d681e4b5a8b9f8b3c1ca5381c40612a70bdb17afda'
 
 # Loopback backends. Nothing here is ever exposed by the firewall.
@@ -127,7 +128,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Нет команды '$1'.
 # the installer corrupted its own output. The prompt is written to stderr so
 # command substitution captures only the answer.
 ask() {
-  local prompt="$1" default="${2:-}" reply
+  local prompt="$1" default="${2:-}" reply=''
   if [[ -n "${default}" ]]; then
     printf '%s\n  [%s]: ' "${prompt}" "${default}" >&2
     read -r reply </dev/tty || true
@@ -149,21 +150,21 @@ ask_required() {
 }
 
 ask_secret() {
-  local prompt="$1" reply
+  local prompt="$1" reply=''
   read -r -s -p "${prompt}: " reply </dev/tty || true
   printf '\n' >&2
   printf '%s' "${reply}"
 }
 
 confirm() {
-  local prompt="$1" reply
+  local prompt="$1" reply=''
   read -r -p "${prompt} [y/N]: " reply </dev/tty || true
   [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
 confirm_typed() {
   # Destructive or outward-facing steps require typing the word, not a keypress.
-  local prompt="$1" word="$2" reply
+  local prompt="$1" word="$2" reply=''
   read -r -p "${prompt} (введите ${word}): " reply </dev/tty || true
   [[ "${reply}" == "${word}" ]]
 }
@@ -1110,10 +1111,17 @@ ask_monitoring() {
     return 0
   fi
 
-  printf '  Нода может отправлять свои метрики на ваш сервер мониторинга:\n'
-  printf '  загрузку CPU и памяти, диск, трафик по интерфейсам, состояния TCP.\n'
-  printf '  Панель для этого не нужна, входящих портов не открывается —\n'
-  printf '  соединение всегда исходящее.\n\n'
+  printf '  Ставится три контейнера, все слушают только 127.0.0.1, суммарно ~29 МБ:\n'
+  printf '    node-exporter  система: CPU, память, диск, сеть, TCP/UDP, PSI\n'
+  printf '    blackbox       зонды пути наружу: ICMP и HTTPS с проверкой\n'
+  printf '                   сертификата — меряют путь ИМЕННО этой ноды\n'
+  printf '    vmagent        сбор и отправка на ваш приёмник\n\n'
+  printf '  Плюс состояние контейнеров через textfile-коллектор: node-exporter\n'
+  printf '  про Docker не знает ничего, и упавший Xray выглядит для него\n'
+  printf '  здоровой машиной.\n\n'
+  printf '  Панель Remnawave не участвует: ничего из неё не читается, при её\n'
+  printf '  падении или обновлении сбор продолжается. Входящих портов не\n'
+  printf '  открывается, соединение всегда исходящее.\n\n'
 
   if ! confirm 'Включить отправку метрик'; then
     info 'Метрики отключены.'
@@ -1130,7 +1138,14 @@ ask_monitoring() {
   [[ -n "${METRICS_PASS}" ]] || die 'Пустой пароль для приёма метрик.'
 }
 
-monitoring_enabled() { [[ -n "${METRICS_URL:-}" ]]; }
+# Also true when the stack is on disk but absent from state: a state file
+# written by an older build has no METRICS_* lines, and keying off the variable
+# alone made `verify` silently skip a deployed, running agent — reporting
+# nothing at all rather than reporting a problem.
+monitoring_enabled() {
+  [[ -n "${METRICS_URL:-}" ]] && return 0
+  [[ -f "${INSTALL_DIR}/monitoring/docker-compose.yml" ]]
+}
 
 render_monitoring() {
   monitoring_enabled || return 0
@@ -1155,8 +1170,100 @@ scrape_configs:
   - job_name: node
     static_configs:
       - targets: ['127.0.0.1:9100']
+
+  # Path quality measured FROM this node. A probe running on the monitoring
+  # server would describe that server's path to the internet, not this one's.
+  # Targets are deliberately few and boring: a proxy node hammering a long list
+  # on a fixed schedule draws a periodic pattern in its own traffic for nothing.
+  - job_name: blackbox_icmp
+    scrape_interval: 30s
+    metrics_path: /probe
+    params: {module: [icmp_v4]}
+    static_configs:
+      - targets: ['1.1.1.1', '8.8.8.8']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  - job_name: blackbox_http
+    scrape_interval: 60s
+    metrics_path: /probe
+    params: {module: [http_2xx]}
+    static_configs:
+      - targets: ['https://www.cloudflare.com/', 'https://www.google.com/']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
 EOF
   chmod 0644 "${dir}/scrape.yml"
+
+  cat >"${dir}/blackbox.yml" <<'EOF'
+modules:
+  icmp_v4:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4
+
+  http_2xx:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      preferred_ip_protocol: ip4
+      # Verification stays ON deliberately: an untrusted certificate must fail
+      # the probe, otherwise a staging or expired one stays invisible — which
+      # is exactly how a whole edge can look healthy while no client can use it.
+      tls_config:
+        insecure_skip_verify: false
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+EOF
+  chmod 0644 "${dir}/blackbox.yml"
+
+  # node_exporter knows nothing about Docker: to it, a crashed Xray looks like
+  # a perfectly healthy machine. cAdvisor would close that gap for 150-200 MB;
+  # a cron script writing a textfile closes it for nothing.
+  mkdir -p /var/lib/node_exporter/textfile
+  cat >/usr/local/bin/rw-docker-textfile.sh <<'EOF'
+#!/usr/bin/env bash
+set -eu
+dir=/var/lib/node_exporter/textfile
+mkdir -p "$dir"
+tmp="$(mktemp "${dir}/docker.prom.XXXXXX")"
+{
+  echo '# HELP docker_container_running 1 if the container is running'
+  echo '# TYPE docker_container_running gauge'
+  echo '# HELP docker_container_restarts_total restarts since creation'
+  echo '# TYPE docker_container_restarts_total counter'
+  docker ps -a --format '{{.Names}}' | while read -r n; do
+    set -- $(docker inspect -f '{{if .State.Running}}1{{else}}0{{end}} {{.RestartCount}}' "$n" 2>/dev/null || echo "0 0")
+    printf 'docker_container_running{name="%s"} %s\n' "$n" "$1"
+    printf 'docker_container_restarts_total{name="%s"} %s\n' "$n" "$2"
+  done
+} >"$tmp"
+# Atomic swap: without it the exporter occasionally reads a half-written file
+# and reports a malformed metric.
+chmod 0644 "$tmp"; mv "$tmp" "${dir}/docker.prom"
+EOF
+  chmod 0755 /usr/local/bin/rw-docker-textfile.sh
+  printf '* * * * * root /usr/local/bin/rw-docker-textfile.sh >/dev/null 2>&1\n' \
+    >/etc/cron.d/rw-docker-textfile
+  chmod 0644 /etc/cron.d/rw-docker-textfile
+  /usr/local/bin/rw-docker-textfile.sh || true
 
   cat >"${dir}/docker-compose.yml" <<EOF
 name: rw-monitoring-agent
@@ -1180,11 +1287,33 @@ services:
       - '--web.listen-address=127.0.0.1:9100'
       - '--path.rootfs=/host'
       - '--collector.tcpstat'
+      - '--collector.textfile.directory=/var/lib/node_exporter/textfile'
       - '--no-collector.wifi'
       - '--no-collector.hwmon'
       - '--no-collector.thermal_zone'
     volumes:
       - /:/host:ro,rslave
+      - /var/lib/node_exporter/textfile:/var/lib/node_exporter/textfile:ro
+    logging:
+      driver: local
+      options: {max-size: 5m, max-file: "2"}
+
+  blackbox:
+    image: ${BLACKBOX_IMAGE}
+    container_name: rw-blackbox
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    # ICMP needs raw sockets. Nothing else is granted.
+    cap_add: [NET_RAW]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    command:
+      - '--config.file=/etc/blackbox/blackbox.yml'
+      - '--web.listen-address=127.0.0.1:9115'
+    volumes:
+      - ${dir}/blackbox.yml:/etc/blackbox/blackbox.yml:ro
     logging:
       driver: local
       options: {max-size: 5m, max-file: "2"}
@@ -1211,7 +1340,7 @@ services:
       - ${dir}/scrape.yml:/etc/vmagent/scrape.yml:ro
       - ${dir}/ingest_password:/etc/vmagent/ingest_password:ro
       - vmagent-data:/vmagent-data
-    depends_on: [node-exporter]
+    depends_on: [node-exporter, blackbox]
     logging:
       driver: local
       options: {max-size: 5m, max-file: "2"}
@@ -1228,10 +1357,11 @@ deploy_monitoring() {
 
   section 'Запуск агента метрик'
   docker pull --quiet "${NODE_EXPORTER_IMAGE}" >/dev/null
+  docker pull --quiet "${BLACKBOX_IMAGE}" >/dev/null
   docker pull --quiet "${VMAGENT_IMAGE}" >/dev/null
   docker compose -f "${INSTALL_DIR}/monitoring/docker-compose.yml" up -d --remove-orphans
   sleep 5
-  docker ps --filter name=rw-node-exporter --filter name=rw-vmagent \
+  docker ps --filter name=rw-node-exporter --filter name=rw-blackbox --filter name=rw-vmagent \
     --format '  {{.Names}}  {{.Status}}'
 }
 
@@ -1247,10 +1377,20 @@ verify_monitoring() {
 
   # Give vmagent one scrape interval before judging it.
   sleep 20
+  # $NF, not $2: VictoriaMetrics prints labels separated by ", " with a space,
+  # so on a multi-label metric $2 is the second label rather than the value and
+  # this check reported zero deliveries on a perfectly healthy agent.
   scraped="$(curl -fsS --max-time 5 http://127.0.0.1:8429/metrics 2>/dev/null \
-    | awk '/^vm_promscrape_scrapes_total/ {s+=$2} END {printf "%d", s+0}')"
+    | awk '/^vm_promscrape_scrapes_total/ {s+=$NF} END {printf "%d", s+0}')"
   sent="$(curl -fsS --max-time 5 http://127.0.0.1:8429/metrics 2>/dev/null \
-    | awk '/^vmagent_remotewrite_requests_total.*status_code="2/ {s+=$2} END {printf "%d", s+0}')"
+    | awk '/^vmagent_remotewrite_requests_total.*status_code="2/ {s+=$NF} END {printf "%d", s+0}')"
+
+  if curl -fsS --max-time 10 'http://127.0.0.1:9115/probe?module=icmp_v4&target=1.1.1.1' 2>/dev/null \
+     | grep -q '^probe_success 1'; then
+    log 'Зонды пути наружу работают.'
+  else
+    warn 'blackbox не отвечает — сетевые зонды собираться не будут.'
+  fi
 
   (( scraped > 0 )) && log "Скрейпов выполнено: ${scraped}." \
     || warn 'vmagent пока ничего не собрал.'
@@ -1448,9 +1588,16 @@ for domain in "$@"; do
   fi
 done
 
-# Xray reloads certificate files by itself because oneTimeLoading is false,
-# so a restart is deliberately not triggered here.
-exit $(( changed == 1 ? 0 : 0 ))
+# Xray does NOT pick up a replaced certificate file on its own, despite
+# oneTimeLoading:false — verified on 26.6.27: after the files on disk were
+# swapped it kept serving the previous certificate until the process restarted.
+# Without this restart a renewal 60 days from now would leave tcp-tls and
+# hysteria2 presenting an expired certificate, and nothing would report it.
+if (( changed == 1 )); then
+  echo "certificates changed, restarting node so Xray picks them up"
+  docker restart rw-node >/dev/null 2>&1 || echo "could not restart rw-node" >&2
+fi
+exit 0
 EOF
   chmod 0755 "${sync}"
 
@@ -1522,7 +1669,12 @@ render_client_template() {
   local n=0 v sel=()
 
   for v in "${SELECTED[@]}"; do
-    [[ "${v}" == 'hysteria2' ]] && continue   # Hysteria hosts are published separately
+    # Xray does have a hysteria OUTBOUND (verified on 26.6.27), so this could
+    # live in the template — except hysteriaSettings.auth is the per-user
+    # password. Hardcoding it here would put every client on one credential and
+    # destroy per-user accounting, HWID and revocation. It only belongs in the
+    # template if the Panel injects the password itself; see the printed steps.
+    [[ "${v}" == 'hysteria2' ]] && continue
     n=$((n + 1))
     sel+=("__HOST_UUID_${n}__")
   done
@@ -1657,6 +1809,41 @@ validate_artifacts() {
 
 # =============================================================== runtime ======
 
+# A staging certificate makes every TLS-terminating transport unusable while
+# leaving REALITY perfectly healthy, so a run can look entirely green and still
+# be broken for most clients. Say it loudly rather than let it pass.
+check_cert_trust() {
+  local d issuer staging=0
+  while read -r d; do
+    [[ -n "${d}" ]] || continue
+    issuer="$(echo | timeout 10 openssl s_client -connect "${d}:443" -servername "${d}" 2>/dev/null \
+      | openssl x509 -noout -issuer 2>/dev/null || true)"
+    [[ "${issuer}" == *STAGING* ]] && { staging=1; warn "${d}: сертификат STAGING, клиенты его не примут."; }
+  done < <(cert_domains)
+
+  if (( staging == 1 )); then
+    warn ''
+    warn 'ВНИМАНИЕ: сертификаты тестовые (ACME staging).'
+    warn 'REALITY будет работать — он сертификат не использует. Всё остальное'
+    warn '(TLS, XHTTP, gRPC, Hysteria2) клиенты отвергнут по недоверию.'
+    warn 'Лечится так:'
+    warn "  sed -i '/acme-staging-v02/d' ${INSTALL_DIR}/Caddyfile"
+    warn '  docker restart rw-edge-caddy       # admin API выключен, reload не сработает'
+    warn "  ${INSTALL_DIR}/sync-certs.sh ${CERT_DIR} <домены tcp-tls/hysteria2>"
+    warn '  docker restart rw-node             # Xray держит старый сертификат в памяти'
+    return 1
+  fi
+  log 'Сертификаты доверенные.'
+}
+
+domain_variant() {
+  local dom="$1" v
+  for v in "${SELECTED[@]}"; do
+    [[ "${DOMAINS[$v]:-}" == "${dom}" ]] && { printf '%s' "${v}"; return 0; }
+  done
+  return 1
+}
+
 verify_runtime() {
   section 'Проверка вживую'
 
@@ -1664,6 +1851,8 @@ verify_runtime() {
   for p in 443 "${PORT_CADDY_TLS}"; do
     port_free "${p}" && die "Порт ${p} не слушается — что-то не поднялось."
   done
+
+  check_cert_trust || true
   log 'TCP/443 и Caddy слушают.'
 
   local v backend
@@ -1683,6 +1872,22 @@ verify_runtime() {
     # Staging certificates are untrusted by design, so verification of the
     # chain has to be skipped or every check below reports a false failure.
     local ins=(); [[ "${RW_ACME_STAGING:-}" == '1' ]] && ins=(-k)
+
+    # On a tcp-tls domain Xray terminates TLS itself and VLESS sits behind it,
+    # so there is no HTTP server to answer and a 200 is impossible by design.
+    # Asking for one here produced a warning blaming the Panel for a backend
+    # that was in fact up and healthy.
+    local own; own="$(domain_variant "${d}" || true)"
+    if [[ "${own}" == 'tcp-tls' ]]; then
+      if echo | timeout 10 openssl s_client -connect "${d}:443" \
+           -servername "${d}" 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then
+        log "${d}: TLS отвечает. HTTP тут не будет — за ним VLESS, так и задумано."
+      else
+        warn "${d}: TLS не отвечает — backend ${BACKEND_TCP_TLS} не поднят панелью."
+      fi
+      continue
+    fi
+
     code="$(curl -sS "${ins[@]}" -o /dev/null -w '%{http_code}' --max-time 15 \
       --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/" 2>/dev/null || true)"
     if [[ "${code}" == '200' ]]; then
@@ -1701,7 +1906,10 @@ verify_runtime() {
   done < <(cert_domains)
 
   if has_variant hysteria2; then
-    if ss -lnuH 2>/dev/null | awk '{print $5}' | grep -qE '[:.]443$'; then
+    # $4, not $5: in `ss -lnu` output the local address is the fourth column
+    # and the fifth is the peer. Reading $5 reported "not listening" while
+    # Hysteria2 was bound and serving.
+    if ss -lnuH 2>/dev/null | awk '{print $4}' | grep -qE '[:.]443$'; then
       log 'UDP/443 слушается — Hysteria2 поднялся.'
     else
       warn 'UDP/443 не слушается. Профиль ещё не применён панелью.'
@@ -1738,6 +1946,22 @@ print_instructions() {
 
     printf 'ШАГ 3. HOSTS\n'
     printf '  Создайте по одному Host на каждый транспорт.\n\n'
+    printf '  ЧЕГО В ФОРМЕ HOST НЕТ И ИСКАТЬ НЕ НАДО:\n'
+    printf '    Public Key и Short ID — Panel выводит их из realitySettings\n'
+    printf '      конфиг-профиля сама, отдельных полей для них нет.\n'
+    printf '    Flow — клиенты (Happ, INCY) подставляют его сами; в профиле он\n'
+    printf '      уже задан на уровне инбаунда как xtls-rprx-vision.\n\n'
+    printf '  EXCLUDE FORMATS — трогать только в одном случае:\n'
+    printf '    Если вы поднимете виртуальный Host с Xray JSON Template (шаг 5),\n'
+    printf '    физические Hosts попадут клиенту дважды: обычной записью и как\n'
+    printf '    outbound внутри шаблона. Тогда у физических исключите XRAY_JSON,\n'
+    printf '    а у виртуального — всё КРОМЕ XRAY_JSON.\n'
+    printf '    Без виртуального Host НИЧЕГО не исключайте: Happ получает именно\n'
+    printf '    XRAY_JSON, и с исключением он не увидит ни одного сервера.\n'
+    printf '    Проверка после настройки — сколько записей в подписке:\n'
+    printf '      curl -s -A "Happ/2.0" "<ссылка>/json" | jq "if type==\\"array\\" then length else 1 end"\n'
+    printf '      1 — схема с шаблоном работает; 3+ — дубли, нужно исключение;\n'
+    printf '      0 или ошибка — исключено лишнее.\n\n'
 
     local i=0
     for v in "${SELECTED[@]}"; do
@@ -1750,53 +1974,47 @@ print_instructions() {
       case "${v}" in
         reality-tcp-steal)
           printf '    SNI ................ %s\n' "${DOMAINS[$v]}"
-          printf '    Public Key ......... %s\n' "${REALITY_PUBLIC_KEY}"
-          printf '    Short ID ........... %s\n' "${REALITY_SHORT_ID}"
-          printf '    Fingerprint ........ chrome\n'
-          printf '    Flow ............... xtls-rprx-vision\n'
           printf '    Security Layer ..... Inbound'\''s default\n'
-          printf '    Exclude formats .... XRAY_JSON, CLASH\n' ;;
+          printf '    Fingerprint ........ chrome\n'
+          printf '    ALPN ............... оставить ПУСТЫМ\n'
+          printf '                         REALITY берёт ALPN из fingerprint клиента;\n'
+          printf '                         фиксированное значение ломает отпечаток.\n' ;;
         reality-tcp-borrow)
           printf '    SNI ................ %s   (донор, не наш домен)\n' "${BORROW_SNI}"
-          printf '    Public Key ......... %s\n' "${REALITY_PUBLIC_KEY}"
-          printf '    Short ID ........... %s\n' "${REALITY_SHORT_ID}"
+          printf '    Security Layer ..... Inbound'\''s default\n'
           printf '    Fingerprint ........ chrome\n'
-          printf '    Flow ............... xtls-rprx-vision\n'
-          printf '    Exclude formats .... XRAY_JSON, CLASH\n' ;;
+          printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
         reality-xhttp-steal)
           printf '    SNI ................ %s\n' "${DOMAINS[$v]}"
           printf '    Path ............... %s\n' "${XHTTP_PATH}"
-          printf '    Public Key ......... %s\n' "${REALITY_PUBLIC_KEY}"
-          printf '    Short ID ........... %s\n' "${REALITY_SHORT_ID}"
+          printf '    Security Layer ..... Inbound'\''s default\n'
           printf '    Fingerprint ........ chrome\n'
-          printf '    Flow ............... (пусто)\n'
-          printf '    Exclude formats .... XRAY_JSON, STASH, SINGBOX, CLASH\n' ;;
+          printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
         xhttp-tls)
           printf '    SNI / Host ......... %s\n' "${DOMAINS[$v]}"
           printf '    Path ............... %s\n' "${XHTTP_PATH}"
           printf '    ALPN ............... h2\n'
           printf '    Security Layer ..... TLS\n'
           printf '    Fingerprint ........ chrome\n'
-          printf '    Exclude formats .... XRAY_JSON, STASH, SINGBOX, CLASH\n' ;;
+          ;;
         grpc-tls)
           printf '    SNI / Host ......... %s\n' "${DOMAINS[$v]}"
           printf '    serviceName ........ %s\n' "${GRPC_SERVICE}"
           printf '    ALPN ............... h2\n'
           printf '    Security Layer ..... TLS\n'
-          printf '    Exclude formats .... XRAY_JSON, CLASH\n' ;;
+          ;;
         tcp-tls)
           printf '    SNI / Host ......... %s\n' "${DOMAINS[$v]}"
-          printf '    ALPN ............... h2, http/1.1\n'
+          printf '    ALPN ............... h2, http/1.1   (как в tlsSettings профиля)\n'
           printf '    Security Layer ..... TLS\n'
-          printf '    Flow ............... xtls-rprx-vision\n'
           printf '    Fingerprint ........ chrome\n'
-          printf '    Exclude formats .... XRAY_JSON, CLASH\n' ;;
+          ;;
         hysteria2)
           printf '    SNI ................ %s\n' "${DOMAINS[$v]}"
           printf '    Port ............... 443/udp\n'
+          printf '    ALPN ............... h3\n'
           printf '    Security Layer ..... TLS (сертификат Let'\''s Encrypt, не self-signed)\n'
-          printf '    Exclude formats .... XRAY_JSON, CLASH, STASH\n'
-          printf '    Примечание ......... этот Host в клиентский XRAY_JSON не инжектится\n' ;;
+          printf '    Примечание ......... см. блок про Hysteria2 ниже\n' ;;
       esac
       printf '    Visible ............ да\n\n'
     done
@@ -1831,6 +2049,65 @@ print_instructions() {
     printf 'ШАГ 6. SUBSCRIPTION SETTINGS\n'
     printf '  Использовать JSON в базовой подписке .... включить\n\n'
 
+    if has_variant hysteria2; then
+      printf 'HYSTERIA2 И КЛИЕНТСКИЙ ШАБЛОН\n'
+      printf '  В сгенерированный шаблон Hysteria2 не включена — и вот почему.\n\n'
+      printf '  Исходящий hysteria в ядре ЕСТЬ (проверено на 26.6.27), форма такая:\n'
+      printf '    "protocol": "hysteria",\n'
+      printf '    "settings": {"version": 2, "address": "<домен>", "port": 443},\n'
+      printf '    "streamSettings": {"network": "hysteria", "security": "tls",\n'
+      printf '      "finalmask": {"quicParams": {"congestion": "bbr"}},\n'
+      printf '      "tlsSettings": {"serverName": "<домен>", "alpn": ["h3"]},\n'
+      printf '      "hysteriaSettings": {"version": 2, "auth": "ПАРОЛЬ"}}\n\n'
+      printf '  Загвоздка в auth: это пароль КОНКРЕТНОГО юзера. Вписать его в\n'
+      printf '  шаблон нельзя — все клиенты сядут на одну учётку, и рассыплется\n'
+      printf '  поюзерный учёт трафика, HWID и отзыв доступа. Пароль обязан\n'
+      printf '  приезжать от Panel через injectHosts.\n\n'
+      printf '  Умеет ли ваша Panel инжектить hysteria — проверяется так:\n'
+      printf '    1. У Hysteria2-хоста убрать XRAY_JSON из Exclude formats.\n'
+      printf '    2. Добавить его UUID в remnawave.injectHosts шаблона.\n'
+      printf '    3. curl -s -A "Happ/2.0" "<ссылка>/json" \\\n'
+      printf '         | jq %s.outbounds[] | select(.protocol==\"hysteria\")%s\n\n' "'" "'"
+      printf '  Появился блок с непустым auth — работает, оставляйте так.\n'
+      printf '  Пусто или auth пустой — Panel не умеет: верните исключение и НЕ\n'
+      printf '  хардкодьте пароль. Тогда Hysteria2 остаётся отдельной записью, а\n'
+      printf '  клиентам, читающим только XRAY_JSON, она видна не будет.\n\n'
+    fi
+
+    if monitoring_enabled; then
+      printf 'МОНИТОРИНГ — что сделать на сервере с Grafana\n'
+      printf '  Правила алертов трогать НЕ нужно. Они написаны через by(node)\n'
+      printf '  с оконным детектором пропажи, поэтому нода %s покрывается\n' "${NODE_CODE}"
+      printf '  автоматически, как только приедут первые метрики.\n\n'
+      printf '  Проверить в Explore (должна появиться за минуту):\n'
+      printf '    up{job="node"}\n\n'
+      printf '  Ручной шаг ровно один — внешняя проба этой ноды с точки\n'
+      printf '  наблюдения. Она отвечает на вопрос "видят ли клиенты" и сама\n'
+      printf '  не появится. В scrape-конфиг сервера мониторинга добавьте:\n\n'
+      printf '    - job_name: blackbox-tcp\n'
+      printf '      metrics_path: /probe\n'
+      printf '      params: {module: [tcp_connect]}\n'
+      printf '      static_configs:\n'
+      printf "        - targets: ['%s:443']\n" "${EDGE_IPV4}"
+      printf '          labels: {vantage: billing, target: %s}\n' "${NODE_CODE}"
+      printf '      relabel_configs:\n'
+      printf '        - source_labels: [__address__]\n'
+      printf '          target_label: __param_target\n'
+      printf '        - source_labels: [__param_target]\n'
+      printf '          target_label: instance\n'
+      printf '        - target_label: __address__\n'
+      printf '          replacement: <хост:порт вашего blackbox>\n\n'
+      printf '  Метка vantage вместо node — намеренно: под node попадают только\n'
+      printf '  метрики, которые нода шлёт сама. Иначе внешняя проба маскирует\n'
+      printf '  пропажу ноды (у неё остаётся свежий ряд с той же меткой) и\n'
+      printf '  попадает под подавление вместе с нодовыми правилами.\n\n'
+      printf '  Перечитать конфиг (сам он этого не делает):\n'
+      printf '    docker kill -s HUP <контейнер vmagent на сервере мониторинга>\n\n'
+      printf '  Через 2 минуты проверить:\n'
+      printf '    probe_success{target="%s"}   → 1\n\n' "${NODE_CODE}"
+      printf '  Дашборды править не нужно: переменная node подхватит ноду сама.\n\n'
+    fi
+
     printf 'ПРОВЕРКА ПОСЛЕ ВСЕГО\n'
     printf '  На сервере:\n'
     printf '    ss -lnt | grep -E "18443|18444|18445|18446|18447"\n'
@@ -1859,12 +2136,28 @@ print_instructions() {
 
 do_rollback() {
   section 'Откат'
+
+  # Раньше эта команда сносила всё сразу, без единого вопроса: один вызов
+  # `rw-edge-install.sh rollback` гасил edge, ноду и агент метрик за секунду.
+  # Достаточно набрать её по ошибке или перепутать с `verify`, чтобы уронить
+  # рабочий узел. Деструктивное действие обязано переспрашивать.
+  printf '  Будут ОСТАНОВЛЕНЫ все контейнеры этой ноды:\n'
+  printf '    HAProxy, Caddy, Xray и агент метрик — узел перестанет\n'
+  printf '    принимать клиентов немедленно.\n'
+  printf '  Также снимутся cron-хуки синхронизации сертификатов и сбора\n'
+  printf '  состояния контейнеров.\n\n'
+  if [[ "${RW_FORCE_ROLLBACK:-}" != '1' ]] && ! confirm_typed 'Подтвердите откат' 'ROLLBACK'; then
+    info 'Откат отменён, ничего не тронуто.'
+    return 0
+  fi
+
   warn 'Останавливаю только контейнеры, созданные этим установщиком.'
   docker compose -f "${INSTALL_DIR}/docker-compose.node.yml" down 2>/dev/null || true
   docker compose -f "${INSTALL_DIR}/docker-compose.edge.yml" down 2>/dev/null || true
   docker compose -f "${INSTALL_DIR}/monitoring/docker-compose.yml" down 2>/dev/null || true
-  rm -f /etc/cron.d/rw-edge-certs
-  log 'Контейнеры остановлены, cron-хук снят.'
+  rm -f /etc/cron.d/rw-edge-certs /etc/cron.d/rw-docker-textfile
+  rm -f /usr/local/bin/rw-docker-textfile.sh
+  log 'Контейнеры остановлены, cron-хуки сняты.'
   printf '\n  Намеренно НЕ тронуто: файлы в %s, тома Caddy с сертификатами,\n' "${INSTALL_DIR}"
   printf '  правила UFW и sysctl. Удаляйте вручную, если это действительно нужно:\n'
   printf '    rm -rf %s\n' "${INSTALL_DIR}"

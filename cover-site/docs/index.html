@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Using the streams — Bitrail</title>
+<meta name="description" content="URL layout, range requests, checksums and CI examples for the Bitrail test stream library.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="canonical" href="https://__SITE_DOMAIN__/docs/">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+        <rect x="1.5" y="4" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M8 8l5 2-5 2z" fill="currentColor"/>
+      </svg>
+      Bitrail
+    </a>
+    <nav class="site">
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="/docs/streams.html">Streams</a>
+      <a href="/changelog.html">Changelog</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <h1>Using the streams</h1>
+  <p class="lede">Stable URLs, honest range support, and a checksum for every
+  file. Nothing else to configure.</p>
+
+  <div class="toc">
+    <p>On this page</p>
+    <ul>
+      <li><a href="#urls">URL layout</a></li>
+      <li><a href="#ranges">Range requests and resume</a></li>
+      <li><a href="#verify">Verifying a transfer</a></li>
+      <li><a href="#ci">Using it from CI</a></li>
+      <li><a href="#caching">Caching behaviour</a></li>
+    </ul>
+  </div>
+
+  <h2 id="urls">URL layout</h2>
+
+  <p>Paths are predictable and permanent. A rendition that exists today will
+  exist at the same URL with the same bytes for as long as this site does.</p>
+
+  <pre><code>/media/&lt;stream&gt;/&lt;stream&gt;-&lt;rendition&gt;.mp4      progressive
+/media/&lt;stream&gt;/hls/master.m3u8                 HLS master playlist
+/media/&lt;stream&gt;/hls/&lt;rendition&gt;.m3u8            HLS media playlist
+/media/&lt;stream&gt;/hls/&lt;rendition&gt;-init.mp4        fMP4 initialisation segment
+/media/&lt;stream&gt;/hls/&lt;rendition&gt;-000.m4s         fMP4 media segments
+/media/SHA256SUMS                               checksums for every media file</code></pre>
+
+  <p>Streams are <code>timecode</code>, <code>gradient</code>,
+  <code>motion</code> and <code>sustained</code>. Renditions are
+  <code>360p</code>, <code>720p</code> and <code>1080p</code>; the
+  <code>sustained</code> stream is 1080p only.</p>
+
+  <h2 id="ranges">Range requests and resume</h2>
+
+  <p>The origin serves <code>Accept-Ranges: bytes</code> and honours both single
+  and multi-range requests. This is the main reason the library exists: plenty of
+  endpoints claim range support and then quietly return the whole file.</p>
+
+  <pre><code># first 1 MiB only
+curl -r 0-1048575 -o head.bin \
+  https://__SITE_DOMAIN__/media/sustained/sustained-1080p.mp4
+
+# confirm the server actually honoured it
+curl -sI -r 0-1023 https://__SITE_DOMAIN__/media/sustained/sustained-1080p.mp4 \
+  | grep -i 'content-range\|206'</code></pre>
+
+  <p>An interrupted download resumes correctly with <code>curl -C -</code> or
+  <code>wget -c</code>. If your CDN or proxy breaks resume, this is a good place
+  to find that out.</p>
+
+  <h2 id="verify">Verifying a transfer</h2>
+
+  <p>Every media file is listed in <code>/media/SHA256SUMS</code> with a path
+  relative to <code>/media/</code>.</p>
+
+  <pre><code>cd media-download
+curl -sO https://__SITE_DOMAIN__/media/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing</code></pre>
+
+  <p>A mismatch means something between the origin and you altered the bytes —
+  usually a transcoding proxy, occasionally a captive portal.</p>
+
+  <h2 id="ci">Using it from CI</h2>
+
+  <p>Pull once per job, not once per test. The assets do not change, so a cached
+  copy keyed on the checksum file is both faster and kinder.</p>
+
+  <pre><code># GitHub Actions fragment
+- name: Cache test media
+  uses: actions/cache@v4
+  with:
+    path: .media
+    key: bitrail-${{ hashFiles('.media/SHA256SUMS') }}
+
+- name: Fetch if missing
+  run: |
+    test -f .media/SHA256SUMS || {
+      mkdir -p .media
+      curl -sS --retry 3 --retry-delay 2 \
+        -o .media/timecode-720p.mp4 \
+        https://__SITE_DOMAIN__/media/timecode/timecode-720p.mp4
+    }</code></pre>
+
+  <div class="note">
+    <p>If you need a sustained multi-gigabyte benchmark, download the
+    <code>sustained</code> asset once and replay it locally in a loop. Repeatedly
+    re-fetching it adds nothing to your measurement except someone else's egress
+    bill.</p>
+  </div>
+
+  <h2 id="caching">Caching behaviour</h2>
+
+  <table>
+    <thead><tr><th>Path</th><th>Cache-Control</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>/media/**</code></td><td><code>public, max-age=31536000, immutable</code></td><td>Contents never change for a given filename</td></tr>
+      <tr><td><code>/assets/**</code></td><td><code>public, max-age=604800</code></td><td>Site styling, changes rarely</td></tr>
+      <tr><td>HTML pages</td><td><code>public, max-age=300</code></td><td>Short, so catalogue updates appear promptly</td></tr>
+      <tr><td><code>/media/SHA256SUMS</code></td><td><code>public, max-age=300</code></td><td>Must reflect new assets quickly</td></tr>
+    </tbody>
+  </table>
+
+  <p>Media is served uncompressed. It is already compressed, and running it
+  through gzip or zstd would only burn CPU on both ends for no gain.</p>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span>Bitrail — content CC0, site MIT. No trackers, no third-party requests.</span>
+    <span><a href="/docs/">Documentation</a> · <a href="/changelog.html">Changelog</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
