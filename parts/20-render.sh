@@ -58,7 +58,10 @@ render_site() {
       info 'Генерирую медиа. Это единственный шаг, который нагружает CPU, и он разовый.'
       dpkg -s ffmpeg >/dev/null 2>&1 || \
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >/dev/null
-      bash "${SITE_DIR}.new/tools/make-assets.sh" "${SITE_DIR}.new/media" \
+      # stdin from /dev/null: ffmpeg reads stdin by default and leaves the
+      # terminal in a non-canonical mode, after which later prompts silently
+      # return the wrong answer.
+      bash "${SITE_DIR}.new/tools/make-assets.sh" "${SITE_DIR}.new/media" </dev/null \
         || die 'Генерация медиа не удалась.'
     fi
   else
@@ -258,9 +261,13 @@ render_haproxy() {
 global
     log stdout format raw local0
     maxconn 20000
+    # The master runs as root to bind :443 and drops workers here; the compose
+    # file grants exactly SETUID and SETGID for this and nothing more.
     user haproxy
     group haproxy
-    stats socket /run/haproxy.sock mode 600 level admin expose-fd listeners
+    # No admin stats socket: it is unused, and every failure mode it introduces
+    # ends with HAProxy exiting and nothing listening on 443. The loopback HTTP
+    # stats listener below covers what it was wanted for.
 
 defaults
     log global
@@ -464,11 +471,20 @@ services:
     network_mode: host
     restart: unless-stopped
     read_only: true
+    # The image defaults to USER haproxy, and cap_add grants capabilities to
+    # root only: a non-root process receives them in neither the effective nor
+    # the ambient set, so binding :443 fails with "Permission denied" and the
+    # container restart-loops. The master therefore starts as uid 0 and the
+    # config drops every worker back to haproxy:haproxy, which needs SETUID and
+    # SETGID. mode=0755 on /run is required for the stats socket; the default
+    # tmpfs mode makes that bind fail too.
+    user: "0:0"
+    command: ["haproxy", "-W", "-db", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     tmpfs:
-      - /run:rw,noexec,nosuid,size=2m
+      - /run:size=8m,mode=0755
     volumes:
       - ${INSTALL_DIR}/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     logging:

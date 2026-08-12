@@ -3,7 +3,7 @@
 ## Одной командой
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/Vlone111/rw-edge/main/rw-edge-install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/__YOUR_GITHUB__/rw-edge/main/rw-edge-install.sh)
 ```
 
 Работает именно так, а не через `curl | bash`: скрипт задаёт вопросы, а в
