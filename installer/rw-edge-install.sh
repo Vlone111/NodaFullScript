@@ -42,7 +42,7 @@ readonly BACKEND_TCP_TLS=18446
 readonly BACKEND_GRPC_TLS=18447
 
 readonly DEFAULT_SITE_REPO='https://github.com/Vlone111/bitrail'
-readonly DEFAULT_SITE_REF='site-v1'
+readonly DEFAULT_SITE_REF='site-v2'
 
 # --------------------------------------------------------------- variant map --
 
