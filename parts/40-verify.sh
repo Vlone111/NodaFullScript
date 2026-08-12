@@ -164,15 +164,22 @@ verify_runtime() {
   local d code
   while read -r d; do
     [[ -n "${d}" ]] || continue
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/" 2>/dev/null || echo 000)"
+    # Staging certificates are untrusted by design, so verification of the
+    # chain has to be skipped or every check below reports a false failure.
+    local ins=(); [[ "${RW_ACME_STAGING:-}" == '1' ]] && ins=(-k)
+    code="$(curl -sS "${ins[@]}" -o /dev/null -w '%{http_code}' --max-time 15 \
+      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/" 2>/dev/null || true)"
     if [[ "${code}" == '200' ]]; then
       log "https://${d}/ → 200, сайт прикрытия отдаётся."
     else
-      warn "https://${d}/ → ${code}. Если это 000 — сертификат ещё не выпущен."
+      if [[ "${code}" == '000' ]] && [[ -d "$(docker volume inspect rw-edge_caddy_data --format '{{.Mountpoint}}' 2>/dev/null)/caddy/certificates" ]]; then
+        warn "https://${d}/ → нет ответа. Сертификат выпущен, значит SNI этого домена ведёт в Xray-бэкенд, который ещё не поднят панелью. Станет доступен после шага с Config Profile."
+      else
+        warn "https://${d}/ → ${code}. Сертификат, вероятно, ещё не выпущен."
+      fi
     fi
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/nope-$(rand_hex 4)" 2>/dev/null || echo 000)"
+    code="$(curl -sS "${ins[@]}" -o /dev/null -w '%{http_code}' --max-time 15 \
+      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/nope-$(rand_hex 4)" 2>/dev/null || true)"
     [[ "${code}" == '404' ]] && log "404 на ${d} настоящий." \
       || warn "На несуществующий путь ${d} ответил ${code}, ожидался 404."
   done < <(cert_domains)
@@ -360,7 +367,8 @@ ${SELF_CMD} — rw-edge installer ${SCRIPT_VERSION}
   rollback   остановить контейнеры установщика
 
 Переменные окружения:
-  RW_ENABLE_UFW=1   включить UFW без интерактивного подтверждения
+  RW_ENABLE_UFW=1     включить UFW без интерактивного подтверждения
+  RW_ACME_STAGING=1   ACME staging: недоверенные сертификаты, без лимитов (тесты)
 EOF
 }
 

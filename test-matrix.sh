@@ -152,6 +152,19 @@ run_case 'steal + xhttp + grpc + tcp-tls'      reality-tcp-steal xhttp-tls grpc-
 run_case 'всё кроме borrow'                    reality-tcp-steal reality-xhttp-steal xhttp-tls grpc-tls tcp-tls hysteria2
 run_case 'borrow + всё TLS + hysteria2'        reality-tcp-borrow xhttp-tls grpc-tls tcp-tls hysteria2
 
+printf '\nACME staging (Caddyfile должен остаться валидным)\n'
+SELECTED=(tcp-tls); declare -gA DOMAINS=([tcp-tls]=d1.example.net); SITE_DOMAIN=d1.example.net
+mk_cert d1.example.net
+RW_ACME_STAGING=1 render_caddyfile >/dev/null 2>&1
+if docker run --rm --pull never --network none --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only \
+     --tmpfs /data:rw,size=8m --tmpfs /config:rw,size=2m --tmpfs /run:rw,size=1m \
+     -v "${work}/opt/Caddyfile:/etc/caddy/Caddyfile:ro" -v "${work}/site:/srv:ro" \
+     "${CADDY_IMAGE_T}" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+  printf '  \033[32mPASS\033[0m  staging Caddyfile валиден\n'; pass=$((pass + 1))
+else
+  printf '  \033[31mFAIL\033[0m  staging Caddyfile отвергнут\n'; fail=$((fail + 1)); failed_cases+=('staging:caddy')
+fi
+
 printf '\nОтрицательный тест (должен быть отклонён)\n'
 SELECTED=(reality-tcp-steal reality-tcp-borrow)
 if validate_selection >/dev/null 2>&1; then

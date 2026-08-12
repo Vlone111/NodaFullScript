@@ -831,7 +831,11 @@ EOF
     default_backend ${default_backend}
 
 backend caddy_tls
-    server caddy_local 127.0.0.1:${PORT_CADDY_TLS} check inter 5s fall 3 rise 2
+    # rise 1 and a short interval on purpose: Caddy starts ACME the moment it
+    # boots, and with the default two successful checks this backend is still
+    # DOWN for the first ten seconds. Every validation attempt in that window
+    # fails and burns an ACME order for nothing.
+    server caddy_local 127.0.0.1:${PORT_CADDY_TLS} check inter 2s fall 3 rise 1
 EOF
     if has_variant reality-tcp-steal || has_variant reality-tcp-borrow; then
       cat <<EOF
@@ -871,7 +875,16 @@ EOF
 # --------------------------------------------------------------- Caddyfile ---
 
 render_caddyfile() {
-  local out="${INSTALL_DIR}/Caddyfile" d v
+  local out="${INSTALL_DIR}/Caddyfile" d v ACME_CA_LINE=''
+
+  # Repeated end-to-end test runs burn Let's Encrypt rate limits fast: five
+  # duplicate certificates per week per identical name set, and a failed run
+  # still consumes orders. Staging has no such ceiling and issues an untrusted
+  # certificate, which is fine when the point is to test the plumbing.
+  if [[ "${RW_ACME_STAGING:-}" == '1' ]]; then
+    ACME_CA_LINE=$'\n            dir https://acme-staging-v02.api.letsencrypt.org/directory'
+    warn 'ACME staging: сертификаты будут НЕдоверенными. Только для тестов.'
+  fi
 
   {
     cat <<EOF
@@ -938,7 +951,7 @@ render_caddyfile() {
     tls {
         issuer acme {
             # Port 80 is never opened; TLS-ALPN-01 arrives via HAProxy.
-            disable_http_challenge
+            disable_http_challenge${ACME_CA_LINE}
         }
     }
 }
@@ -1489,15 +1502,22 @@ verify_runtime() {
   local d code
   while read -r d; do
     [[ -n "${d}" ]] || continue
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/" 2>/dev/null || echo 000)"
+    # Staging certificates are untrusted by design, so verification of the
+    # chain has to be skipped or every check below reports a false failure.
+    local ins=(); [[ "${RW_ACME_STAGING:-}" == '1' ]] && ins=(-k)
+    code="$(curl -sS "${ins[@]}" -o /dev/null -w '%{http_code}' --max-time 15 \
+      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/" 2>/dev/null || true)"
     if [[ "${code}" == '200' ]]; then
       log "https://${d}/ → 200, сайт прикрытия отдаётся."
     else
-      warn "https://${d}/ → ${code}. Если это 000 — сертификат ещё не выпущен."
+      if [[ "${code}" == '000' ]] && [[ -d "$(docker volume inspect rw-edge_caddy_data --format '{{.Mountpoint}}' 2>/dev/null)/caddy/certificates" ]]; then
+        warn "https://${d}/ → нет ответа. Сертификат выпущен, значит SNI этого домена ведёт в Xray-бэкенд, который ещё не поднят панелью. Станет доступен после шага с Config Profile."
+      else
+        warn "https://${d}/ → ${code}. Сертификат, вероятно, ещё не выпущен."
+      fi
     fi
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/nope-$(rand_hex 4)" 2>/dev/null || echo 000)"
+    code="$(curl -sS "${ins[@]}" -o /dev/null -w '%{http_code}' --max-time 15 \
+      --resolve "${d}:443:${EDGE_IPV4}" "https://${d}/nope-$(rand_hex 4)" 2>/dev/null || true)"
     [[ "${code}" == '404' ]] && log "404 на ${d} настоящий." \
       || warn "На несуществующий путь ${d} ответил ${code}, ожидался 404."
   done < <(cert_domains)
@@ -1685,7 +1705,8 @@ ${SELF_CMD} — rw-edge installer ${SCRIPT_VERSION}
   rollback   остановить контейнеры установщика
 
 Переменные окружения:
-  RW_ENABLE_UFW=1   включить UFW без интерактивного подтверждения
+  RW_ENABLE_UFW=1     включить UFW без интерактивного подтверждения
+  RW_ACME_STAGING=1   ACME staging: недоверенные сертификаты, без лимитов (тесты)
 EOF
 }
 

@@ -303,7 +303,11 @@ EOF
     default_backend ${default_backend}
 
 backend caddy_tls
-    server caddy_local 127.0.0.1:${PORT_CADDY_TLS} check inter 5s fall 3 rise 2
+    # rise 1 and a short interval on purpose: Caddy starts ACME the moment it
+    # boots, and with the default two successful checks this backend is still
+    # DOWN for the first ten seconds. Every validation attempt in that window
+    # fails and burns an ACME order for nothing.
+    server caddy_local 127.0.0.1:${PORT_CADDY_TLS} check inter 2s fall 3 rise 1
 EOF
     if has_variant reality-tcp-steal || has_variant reality-tcp-borrow; then
       cat <<EOF
@@ -343,7 +347,16 @@ EOF
 # --------------------------------------------------------------- Caddyfile ---
 
 render_caddyfile() {
-  local out="${INSTALL_DIR}/Caddyfile" d v
+  local out="${INSTALL_DIR}/Caddyfile" d v ACME_CA_LINE=''
+
+  # Repeated end-to-end test runs burn Let's Encrypt rate limits fast: five
+  # duplicate certificates per week per identical name set, and a failed run
+  # still consumes orders. Staging has no such ceiling and issues an untrusted
+  # certificate, which is fine when the point is to test the plumbing.
+  if [[ "${RW_ACME_STAGING:-}" == '1' ]]; then
+    ACME_CA_LINE=$'\n            dir https://acme-staging-v02.api.letsencrypt.org/directory'
+    warn 'ACME staging: сертификаты будут НЕдоверенными. Только для тестов.'
+  fi
 
   {
     cat <<EOF
@@ -410,7 +423,7 @@ render_caddyfile() {
     tls {
         issuer acme {
             # Port 80 is never opened; TLS-ALPN-01 arrives via HAProxy.
-            disable_http_challenge
+            disable_http_challenge${ACME_CA_LINE}
         }
     }
 }
