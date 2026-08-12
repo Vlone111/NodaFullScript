@@ -248,7 +248,17 @@ render_haproxy() {
       xhttp-tls|grpc-tls)
         acls+="    acl sni_${v//-/_} req.ssl_sni -i ${dom}"$'\n'
         routes+="    use_backend caddy_tls if sni_${v//-/_}"$'\n' ;;
-      hysteria2) : ;;  # UDP only, HAProxy is not involved
+      hysteria2)
+        # Данные Hysteria2 идут по UDP, HAProxy их не видит — но домен-то
+        # резолвится в этот же IP, и любой браузер или сканер постучится по
+        # TCP/443 с этим SNI. Без явного правила он проваливался в
+        # default_backend: при self-steal туда отвечал Caddy и всё выглядело
+        # обычным сайтом, а при borrow REALITY уводил рукопожатие к донору и
+        # домен предъявлял ЧУЖОЙ сертификат. Для человека это «сайт не
+        # открывается», а для наблюдателя — готовая примета: домен на твоём IP
+        # отдаёт чужой CN.
+        acls+="    acl sni_${v//-/_} req.ssl_sni -i ${dom}"$'\n'
+        routes+="    use_backend caddy_tls if sni_${v//-/_}"$'\n' ;;
     esac
   done
 

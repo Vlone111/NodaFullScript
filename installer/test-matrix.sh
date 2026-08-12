@@ -104,6 +104,26 @@ run_case() {
       || err='haproxy'
   fi
 
+  # Валидность конфига ещё не значит, что маршруты осмысленны: отсутствующий
+  # ACL — совершенно законный HAProxy. Именно так пролезал баг, при котором
+  # домен Hysteria2 не имел правила по SNI, проваливался в default_backend и
+  # при borrow-варианте предъявлял сертификат чужого донора.
+  # Правило: у каждого домена либо есть свой ACL, либо он принадлежит тому
+  # варианту, который владеет default_backend.
+  if [[ -z "${err}" ]]; then
+    local d v_owner=''
+    for v in "${SELECTED[@]}"; do
+      [[ "${v}" == 'reality-tcp-steal' || "${v}" == 'reality-tcp-borrow' ]] && v_owner="${v}"
+    done
+    for v in "${SELECTED[@]}"; do
+      d="${DOMAINS[$v]:-}"
+      [[ -n "${d}" ]] || continue
+      [[ "${v}" == "${v_owner}" ]] && continue
+      grep -q "req.ssl_sni -i ${d}\b" "${work}/opt/haproxy.cfg" \
+        || { err="sni:${d} без правила"; break; }
+    done
+  fi
+
   if [[ -z "${err}" ]]; then
     if ! docker run --rm --pull never --network none \
         --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only \
