@@ -3,7 +3,7 @@
 ## Одной командой
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/Vlone111/NodaFullScript/main/installer/rw-edge-install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/__YOUR_GITHUB__/rw-edge/main/rw-edge-install.sh)
 ```
 
 Работает именно так, а не через `curl | bash`: скрипт задаёт вопросы, а в
@@ -20,8 +20,8 @@ process substitution, а весь интерактив читается напр
 ## Или клонированием
 
 ```sh
-git clone https://github.com/Vlone111/NodaFullScript
-cd NodaFullScript/installer
+git clone https://github.com/__YOUR_GITHUB__/rw-edge
+cd rw-edge
 ./rw-edge-install.sh
 ```
 

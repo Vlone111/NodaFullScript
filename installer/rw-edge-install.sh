@@ -41,7 +41,7 @@ readonly BACKEND_REALITY_XHTTP=18445
 readonly BACKEND_TCP_TLS=18446
 readonly BACKEND_GRPC_TLS=18447
 
-readonly DEFAULT_SITE_REPO='https://github.com/Vlone111/Proper-SelfSteal-site'
+readonly DEFAULT_SITE_REPO='https://github.com/Vlone111/bitrail'
 readonly DEFAULT_SITE_REF='site-v1'
 
 # --------------------------------------------------------------- variant map --

@@ -25,7 +25,14 @@ set -e
 trap - ERR
 
 mkdir -p "${work}/opt/private" "${work}/site" "${work}/certs"
-cp -r "${here}/../cover-site/." "${work}/site/"
+# Заглушка вместо настоящего сайта: матрица проверяет конфиги, а не вёрстку.
+# Копии сайта в этом репозитории намеренно нет — он отдаётся публично на каждой
+# ноде, и соседство с исходниками установщика выдавало бы прикрытие.
+# Caddyfile ссылается ровно на эти четыре файла.
+printf '<!doctype html><title>stub</title>\n' >"${work}/site/index.html"
+printf '<!doctype html><title>404</title>\n'  >"${work}/site/404.html"
+printf 'User-agent: *\nAllow: /\n'           >"${work}/site/robots.txt"
+printf '<?xml version="1.0"?><urlset/>\n'     >"${work}/site/sitemap.xml"
 
 NODE_IMAGE_T='remnawave/node:2.8.0'
 CADDY_IMAGE_T='caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648'

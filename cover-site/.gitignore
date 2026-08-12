@@ -1,3 +1,0 @@
-# Generated media. Reproduce with tools/make-assets.sh instead of committing
-# hundreds of megabytes of binaries into git history.
-/media/
