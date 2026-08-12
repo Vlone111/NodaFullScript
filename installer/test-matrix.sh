@@ -104,24 +104,97 @@ run_case() {
       || err='haproxy'
   fi
 
-  # Валидность конфига ещё не значит, что маршруты осмысленны: отсутствующий
-  # ACL — совершенно законный HAProxy. Именно так пролезал баг, при котором
-  # домен Hysteria2 не имел правила по SNI, проваливался в default_backend и
-  # при borrow-варианте предъявлял сертификат чужого донора.
-  # Правило: у каждого домена либо есть свой ACL, либо он принадлежит тому
-  # варианту, который владеет default_backend.
+  # ---------------------------------------------------------- инварианты ----
+  #
+  # Валидный конфиг и осмысленный конфиг — разные вещи. Баг с доменом Hysteria2
+  # пролез именно так: правило по SNI отсутствовало, HAProxy считал это
+  # законным, и при self-steal результат случайно оказывался верным, потому что
+  # аварийный выход вёл в локальный Caddy. При borrow тот же выход уводил
+  # рукопожатие к чужому донору, и домен предъявлял чужой сертификат.
+  #
+  # Поэтому ниже проверяется не «собралось ли», а «означает ли то, что нужно».
+  # Каждое утверждение сформулировано так, чтобы не зависеть от того, какой
+  # вариант оказался владельцем default_backend.
+
   if [[ -z "${err}" ]]; then
-    local d v_owner=''
+    local cfg="${work}/opt/haproxy.cfg"
+    local prof="${work}/opt/private/config-profile.json"
+    local d owner='' tgt names
+
     for v in "${SELECTED[@]}"; do
-      [[ "${v}" == 'reality-tcp-steal' || "${v}" == 'reality-tcp-borrow' ]] && v_owner="${v}"
+      [[ "${v}" == 'reality-tcp-steal' || "${v}" == 'reality-tcp-borrow' ]] && owner="${v}"
     done
+
+    # 1. У каждого домена есть своё правило по SNI, кроме домена того варианта,
+    #    которому принадлежит default_backend.
     for v in "${SELECTED[@]}"; do
       d="${DOMAINS[$v]:-}"
       [[ -n "${d}" ]] || continue
-      [[ "${v}" == "${v_owner}" ]] && continue
-      grep -q "req.ssl_sni -i ${d}\b" "${work}/opt/haproxy.cfg" \
-        || { err="sni:${d} без правила"; break; }
+      [[ "${v}" == "${owner}" ]] && continue
+      grep -q "req.ssl_sni -i ${d}\b" "${cfg}" || { err="sni:${d} без правила"; break; }
     done
+
+    # 2. Ни один домен не уезжает в REALITY-инбаунд, который его не знает.
+    #    Это тот самый баг в общем виде: домен, попавший в REALITY с чужим
+    #    serverNames, получит сертификат донора вместо своего.
+    if [[ -z "${err}" && -f "${prof}" ]]; then
+      while IFS=$'\t' read -r tag port names; do
+        for v in "${SELECTED[@]}"; do
+          d="${DOMAINS[$v]:-}"
+          [[ -n "${d}" ]] || continue
+          # домен маршрутизирован в этот бэкенд?
+          grep -A2 "req.ssl_sni -i ${d}\b" "${cfg}" | grep -q "${port}" || continue
+          [[ "${names}" == *"${d}"* ]] || { err="sni:${d} ведёт в REALITY без него в serverNames"; break 2; }
+        done
+      done < <(jq -r '.inbounds[] | select(.streamSettings.realitySettings)
+                      | "\(.tag)\t\(.port)\t\(.streamSettings.realitySettings.serverNames|join(","))"' \
+                 "${prof}" 2>/dev/null)
+    fi
+
+    # 3. Каждый бэкенд, на который есть маршрут, реально кем-то слушается:
+    #    порт присутствует либо среди инбаундов профиля, либо это локальный Caddy.
+    if [[ -z "${err}" && -f "${prof}" ]]; then
+      local ports_in
+      ports_in="$(jq -r '.inbounds[].port' "${prof}" 2>/dev/null | tr '\n' ' ')"
+      while read -r p; do
+        [[ -n "${p}" ]] || continue
+        [[ "${p}" == "${PORT_CADDY_TLS}" || "${p}" == "${PORT_CADDY_PLAIN}" ]] && continue
+        [[ " ${ports_in} " == *" ${p} "* ]] || { err="маршрут на порт ${p}, которого нет в профиле"; break; }
+      done < <(grep -oE 'server [a-z_]+ 127\.0\.0\.1:[0-9]+' "${cfg}" | grep -oE '[0-9]+$')
+    fi
+
+    # 4. Обратное: каждый TCP-инбаунд профиля достижим хотя бы одним маршрутом.
+    #    Инбаунд, до которого нельзя доехать, — тихо неработающий транспорт.
+    #    Искать надо в двух файлах, а не в одном: до xhttp-tls и grpc-tls
+    #    HAProxy не ходит вовсе, их проксирует Caddy по h2c. Проверка только по
+    #    haproxy.cfg дала ложное срабатывание на трёх комбинациях сразу.
+    if [[ -z "${err}" && -f "${prof}" ]]; then
+      while read -r p; do
+        [[ -n "${p}" ]] || continue
+        [[ "${p}" == '443' ]] && continue   # Hysteria2 слушает UDP сама
+        grep -q "127\.0\.0\.1:${p}\b" "${cfg}" && continue
+        grep -q "127\.0\.0\.1:${p}\b" "${work}/opt/Caddyfile" 2>/dev/null && continue
+        err="инбаунд ${p} недостижим ни из HAProxy, ни из Caddy"; break
+      done < <(jq -r '.inbounds[] | select(.protocol != "hysteria") | .port' "${prof}" 2>/dev/null)
+    fi
+
+    # 5. Сертификаты, которые монтируются в Xray, соответствуют выбранным
+    #    доменам: путь с чужим именем даёт TLS, которому клиент не поверит.
+    if [[ -z "${err}" && -f "${prof}" ]]; then
+      while read -r cf; do
+        [[ -n "${cf}" ]] || continue
+        # Каталог с сертификатом называется по домену. basename от dirname
+        # надёжнее регулярки: путь смонтирован как /etc/rw-certs/<домен>/,
+        # и шаблон '/certs/' в него не попадал вовсе.
+        d="$(basename "$(dirname "${cf}")")"
+        local ok=0
+        for v in "${SELECTED[@]}"; do
+          [[ "${DOMAINS[$v]:-}" == "${d}" ]] && ok=1
+        done
+        (( ok == 1 )) || { err="сертификат ${d} не принадлежит ни одному выбранному домену"; break; }
+      done < <(jq -r '.inbounds[].streamSettings.tlsSettings.certificates[]?.certificateFile // empty' \
+                 "${prof}" 2>/dev/null)
+    fi
   fi
 
   if [[ -z "${err}" ]]; then
