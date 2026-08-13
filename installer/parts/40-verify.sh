@@ -382,42 +382,44 @@ print_instructions() {
     done
 
     if [[ -f "${PRIVATE_DIR}/xray-json-template.json" ]]; then
-      printf 'ШАГ 4. XRAY JSON TEMPLATE — ОДИН НА ВЕСЬ ФЛОТ, НЕ НА НОДУ\n'
-      printf '  Шаблон получает пользователь, а не нода. Он один, сколько бы\n'
-      printf '  нод у вас ни было.\n\n'
-      printf '  ЕСЛИ ЭТО ПЕРВАЯ НОДА — Subscription -> Templates -> Xray JSON,\n'
-      printf '  создать и вставить:\n'
-      printf '    %s\n\n' "${PRIVATE_DIR}/xray-json-template.json"
-      printf '  Заменить плейсхолдеры на UUID созданных Hosts:\n'
+      printf 'ШАГ 4. XRAY JSON TEMPLATE\n'
+      printf '  Шаблон отдаётся пользователю. Есть две рабочие схемы, выбор\n'
+      printf '  зависит от того, что вы продаёте.\n\n'
+      printf '  СХЕМА А — запись на страну (обычно нужна именно она)\n'
+      printf '    Свой шаблон и свой виртуальный Host на КАЖДУЮ ноду.\n'
+      printf '    Клиент видит список стран: %s, и так далее.\n' "${NODE_CODE}"
+      printf '    Внутри каждой записи балансировщик сам берёт лучший транспорт\n'
+      printf '    этой ноды. Страну выбирает пользователь — то, за что платят.\n\n'
+      printf '  СХЕМА Б — одна запись на весь флот\n'
+      printf '    Один шаблон и один виртуальный Host, в списке UUID хосты всех\n'
+      printf '    нод сразу. Клиент видит одну кнопку AUTO, балансировщик\n'
+      printf '    выбирает узел по пингу. Выбора страны у пользователя нет.\n\n'
+      printf '  Для этой ноды: Subscription -> Templates -> Xray JSON, вставить\n'
+      printf '    %s\n' "${PRIVATE_DIR}/xray-json-template.json"
+      printf '  и заменить плейсхолдеры на UUID созданных Hosts:\n'
       local i=0 v
       for v in "${SELECTED[@]}"; do
         [[ "${v}" == 'hysteria2' ]] && continue
         i=$((i + 1))
         printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${i}" "$(variant_tag "${v}")"
       done
+      if has_variant hysteria2; then
+        printf '  Hysteria2 в шаблон не вписана. Если ваша Panel умеет её\n'
+        printf '  инжектить — допишите её UUID в тот же массив вручную.\n'
+      fi
       printf '\n'
-      printf '  ЕСЛИ ШАБЛОН УЖЕ ЕСТЬ (вторая и последующие ноды)\n'
-      printf '  НЕ создавайте второй и НЕ заменяйте существующий. Откройте его\n'
-      printf '  и допишите UUID новых хостов в конец массива:\n\n'
-      printf '    remnawave.injectHosts[0].selector.values\n\n'
-      printf '  Больше в шаблоне не меняйте ничего.\n\n'
-      printf '  Почему так: физические Hosts исключены из XRAY_JSON и видны\n'
-      printf '  клиенту ТОЛЬКО через шаблон. Создадите второй шаблон и назначите\n'
-      printf '  его — хосты первой ноды у клиентов просто исчезнут, молча, без\n'
-      printf '  единой ошибки в панели.\n\n'
-      printf '  Балансировщик leastPing работает по префиксу proxy и подхватит\n'
-      printf '  все вклеенные хосты сразу, с любого числа нод: клиент сам пойдёт\n'
-      printf '  через тот, до которого ближе.\n\n'
-      printf '  Проверить, что список полный:\n'
-      printf "    curl -s -A \"Happ/2.0\" \"<ссылка>\" | jq '[.outbounds[].tag]'\n"
-      printf '    Ожидаем proxy, proxy-2, ... по одному на каждый физический\n'
-      printf '    Host всех нод.\n\n'
+      printf '  По схеме Б: НЕ заменяйте существующий шаблон, а допишите новые\n'
+      printf '  UUID в конец массива remnawave.injectHosts[0].selector.values.\n'
+      printf '  Замена шаблона или удаление UUID убирает хосты той ноды у всех\n'
+      printf '  клиентов молча — физические Hosts исключены из XRAY_JSON и видны\n'
+      printf '  только через шаблон.\n\n'
+      printf '  Проверка, что список полный:\n'
+      printf "    curl -s -A \"Happ/2.0\" \"<ссылка>\" | jq '[.. | .tag? // empty] | map(select(startswith(\"proxy\")))'\n\n"
 
-      printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА — ТОЖЕ ОДИН НА ФЛОТ\n'
-      printf '  Если такой Host уже создан для другой ноды — пропустите шаг,\n'
-      printf '  второй не нужен. Он лишь носитель шаблона, а шаблон общий.\n\n'
-      printf '  Для первой ноды создайте:\n'
-      printf '    Remark ............. AUTO\n'
+      printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА\n'
+      printf '  По схеме А — свой на каждую ноду. По схеме Б — один на флот,\n'
+      printf '  и если он уже создан, шаг пропускается.\n\n'
+      printf '    Remark ............. %s\n' "${NODE_CODE}"
       printf '    Inbound ............ %s\n' "$(variant_tag "${SELECTED[0]}")"
       printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
       printf '    Xray JSON Template . созданный на шаге 4\n'
