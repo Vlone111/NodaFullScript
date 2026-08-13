@@ -101,8 +101,14 @@ else
 fi
 readonly SELF_CMD
 
+# set -E передаёт трап в функции и подоболочки, поэтому при ошибке внутри
+# вложенного вызова он срабатывает на каждом уровне и печатает одно и то же
+# сообщение несколько раз. Флаг оставляет только первое.
+RW_ERR_REPORTED=0
 on_error() {
   local code=$? line=${BASH_LINENO[0]}
+  [[ "${RW_ERR_REPORTED}" == '1' ]] && exit "${code}"
+  RW_ERR_REPORTED=1
   printf '\n%s[xx]%s   Прервано на строке %s (код %s).\n' \
     "${C_RED}" "${C_RESET}" "${line}" "${code}" >&2
   printf '      Состояние: %s\n' "${STATE_FILE}" >&2

@@ -5,17 +5,13 @@ render_client_template() {
   local out="${PRIVATE_DIR}/xray-json-template.json"
   local n=0 v sel=()
 
+  # Слот на КАЖДЫЙ хост, включая Hysteria2: пароль подставляет Panel при
+  # инжекте, руками его в шаблон вписывать по-прежнему нельзя.
   for v in "${SELECTED[@]}"; do
-    # Xray does have a hysteria OUTBOUND (verified on 26.6.27), so this could
-    # live in the template — except hysteriaSettings.auth is the per-user
-    # password. Hardcoding it here would put every client on one credential and
-    # destroy per-user accounting, HWID and revocation. It only belongs in the
-    # template if the Panel injects the password itself; see the printed steps.
-    [[ "${v}" == 'hysteria2' ]] && continue
     n=$((n + 1))
     sel+=("__HOST_UUID_${n}__")
   done
-  (( n > 0 )) || { info 'Клиентский XRAY_JSON не нужен: выбран только Hysteria2.'; return 0; }
+  (( n > 0 )) || return 0
 
   local values
   values="$(printf '%s\n' "${sel[@]}" | jq -R . | jq -s .)"
@@ -24,7 +20,7 @@ render_client_template() {
     remnawave: {
       injectHosts: [{
         selector: {type: "uuids", values: $values},
-        selectFrom: "NOT_HIDDEN",
+        selectFrom: "HIDDEN",
         tagPrefix: "proxy"
       }]
     },
@@ -288,36 +284,20 @@ print_instructions() {
     printf '      конфиг-профиля сама, отдельных полей для них нет.\n'
     printf '    Flow — клиенты (Happ, INCY) подставляют его сами; в профиле он\n'
     printf '      уже задан на уровне инбаунда как xtls-rprx-vision.\n\n'
-    printf '  EXCLUDE FORMATS — при включённом JSON в базовой подписке\n'
-    printf '  (Subscription Settings → «Использовать JSON в базовой подписке»)\n\n'
-    printf '    Клиенту в этом режиме приезжает XRAY_JSON, поэтому всё, что из\n'
-    printf '    него исключено, он не увидит совсем. Раскладка такая:\n\n'
-    printf '    ФИЗИЧЕСКИЕ HOSTS (все, кроме Hysteria2)\n'
-    printf '      Exclude formats .... XRAY_JSON\n'
-    printf '      Иначе клиент получит их дважды: обычной записью и как outbound\n'
-    printf '      внутри шаблона, который вклеивает их через injectHosts.\n\n'
-    printf '    ВИРТУАЛЬНЫЙ HOST с шаблоном\n'
-    printf '      Exclude formats .... всё, КРОМЕ XRAY_JSON\n'
-    printf '      Он и есть та единственная запись, которую должен увидеть клиент.\n\n'
-    if has_variant hysteria2; then
-      printf '    HYSTERIA2\n'
-      printf '      Exclude formats .... НИЧЕГО не исключать\n'
-      printf '      Плюс её UUID добавить в remnawave.injectHosts шаблона.\n'
-      printf '      Галка исключения должна быть СНЯТА: иначе Hysteria2 не\n'
-      printf '      доедет до клиента ни отдельной записью, ни внутри шаблона,\n'
-      printf '      и поднятый UDP/443 останется мёртвым грузом.\n\n'
-    fi
-    printf '    ПРОВЕРКА после настройки — что реально приехало клиенту:\n'
-    printf '      curl -s -A "Happ/2.0" "<ссылка подписки>" | jq "[.outbounds[].protocol] | unique"\n\n'
-    printf '      Ожидаем список протоколов без дублей. Если Hysteria2 умеет\n'
-    printf '      инжектиться, в нём будет "hysteria" — проверить, что пароль\n'
-    printf '      подставился, а не остался пустым:\n'
-    printf '      curl -s -A "Happ/2.0" "<ссылка>" \\\n'
-    printf '        | jq %s.outbounds[] | select(.protocol=="hysteria") | .streamSettings.hysteriaSettings.auth%s\n\n' "'" "'"
-    printf '      Пусто или null — панель инжектить не умеет; тогда Hysteria2\n'
-    printf '      останется отдельной записью рядом с основной, и это нормально.\n'
-    printf '      НЕ вписывайте пароль в шаблон руками: он поюзерный, и одна\n'
-    printf '      учётка на всех обрушит учёт трафика, HWID и отзыв доступа.\n\n'
+    printf '  HIDDEN — включить у ВСЕХ хостов ниже\n\n'
+    printf '    Все физические Hosts помечаются Hidden. Видимым остаётся только\n'
+    printf '    виртуальный AUTO из шага 5.\n\n'
+    printf '    Шаблон забирает их через selectFrom: "HIDDEN", поэтому спрятанный\n'
+    printf '    хост не исчезает, а попадает внутрь AUTO вместе с правилами\n'
+    printf '    маршрутизации.\n\n'
+    printf '    Смысл в том, что взять транспорт в обход шаблона становится\n'
+    printf '    неоткуда. Видимый хост без шаблона отдаёт клиенту сервер без\n'
+    printf '    RU-direct: российский трафик пойдёт через заграницу, у клиента\n'
+    printf '    отвалятся банки и госуслуги, а вы заплатите за этот трафик.\n\n'
+    printf '    Exclude formats при этой схеме трогать не нужно.\n\n'
+    printf '    ПРОВЕРКА: клиент должен увидеть РОВНО ОДНУ запись.\n'
+    printf '    Если записей больше — какой-то хост остался видимым.\n'
+    printf '    Если ни одной — спрятали заодно и виртуальный AUTO.\n\n'
 
     local i=0
     for v in "${SELECTED[@]}"; do
@@ -372,7 +352,7 @@ print_instructions() {
           printf '    Security Layer ..... TLS (сертификат Let'\''s Encrypt, не self-signed)\n'
           printf '    Примечание ......... см. блок про Hysteria2 ниже\n' ;;
       esac
-      printf '    Visible ............ да\n\n'
+      printf '    Hidden ............. ДА\n\n'
     done
 
     if [[ -f "${PRIVATE_DIR}/xray-json-template.json" ]]; then
@@ -382,7 +362,6 @@ print_instructions() {
       printf '  Перед вставкой замените плейсхолдеры на UUID созданных Hosts:\n'
       local n=0
       for v in "${SELECTED[@]}"; do
-        [[ "${v}" == 'hysteria2' ]] && continue
         n=$((n + 1))
         printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${n}" "$(variant_tag "${v}")"
       done
@@ -396,10 +375,10 @@ print_instructions() {
       printf '    Inbound ............ %s\n' "$(variant_tag "${SELECTED[0]}")"
       printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
       printf '    Xray JSON Template . созданный на шаге 4\n'
-      printf '    Exclude formats .... всё, КРОМЕ XRAY_JSON\n'
-      printf '    Visible ............ да\n\n'
-      printf '  Физические Hosts исключены из XRAY_JSON намеренно: иначе клиент\n'
-      printf '  увидит их и отдельными записями, и внутри шаблона.\n\n'
+      printf '    Hidden ............. НЕТ — единственный видимый хост\n\n'
+      printf '  Все физические Hosts спрятаны на шаге 3, шаблон забирает их\n'
+      printf '  через selectFrom: "HIDDEN". Клиент видит одну запись, внутри\n'
+      printf '  неё все транспорты и правила RU-direct.\n\n'
     fi
 
     printf 'ШАГ 6. SUBSCRIPTION SETTINGS\n'
@@ -419,15 +398,14 @@ print_instructions() {
       printf '  шаблон нельзя — все клиенты сядут на одну учётку, и рассыплется\n'
       printf '  поюзерный учёт трафика, HWID и отзыв доступа. Пароль обязан\n'
       printf '  приезжать от Panel через injectHosts.\n\n'
-      printf '  Умеет ли ваша Panel инжектить hysteria — проверяется так:\n'
-      printf '    1. У Hysteria2-хоста убрать XRAY_JSON из Exclude formats.\n'
-      printf '    2. Добавить его UUID в remnawave.injectHosts шаблона.\n'
-      printf '    3. curl -s -A "Happ/2.0" "<ссылка>/json" \\\n'
-      printf '         | jq %s.outbounds[] | select(.protocol==\"hysteria\")%s\n\n' "'" "'"
-      printf '  Появился блок с непустым auth — работает, оставляйте так.\n'
-      printf '  Пусто или auth пустой — Panel не умеет: верните исключение и НЕ\n'
-      printf '  хардкодьте пароль. Тогда Hysteria2 остаётся отдельной записью, а\n'
-      printf '  клиентам, читающим только XRAY_JSON, она видна не будет.\n\n'
+      printf '  Слот под её UUID в шаблоне уже есть, прятать её нужно так же,\n'
+      printf '  как остальные. Инжектит ли Panel hysteria — видно на ноде:\n\n'
+      printf '    ss -unH state established %s( sport = :443 )%s | wc -l\n\n' "'" "'"
+      printf '  Больше нуля при подключённом клиенте — инжектит, транспорт\n'
+      printf '  работает внутри AUTO наравне с остальными. Ноль — не инжектит,\n'
+      printf '  UDP/443 просто не используется. Пароль в шаблон руками НЕ\n'
+      printf '  вписывать: он поюзерный, одна учётка на всех обрушит учёт\n'
+      printf '  трафика, HWID и отзыв доступа.\n\n'
     fi
 
     if monitoring_enabled; then

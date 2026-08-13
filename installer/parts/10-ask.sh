@@ -226,19 +226,45 @@ verify_dns() {
   log 'DNS проверен.'
 }
 
+# `|| true` здесь обязательны. В скрипте включён pipefail, поэтому статусом
+# конвейера становится код dig, а не успешного tail. Недоступный резолвер даёт
+# код 9, и set -e убивал установку прямо на проверке DNS — притом что сама
+# проверка ничего не настраивает и права ронять установку не имеет.
 verify_one_domain() {
-  local domain="$1" resolver answer ok=0
+  local domain="$1" resolver answer ok=0 unreachable=0
+
+  local rc
   for resolver in 9.9.9.9 77.88.8.8; do
-    answer="$(dig +short +time=4 +tries=2 "@${resolver}" "${domain}" A 2>/dev/null | tail -1)"
-    if [[ "${answer}" == "${EDGE_IPV4}" ]]; then
+    rc=0
+    answer="$(dig +short +time=4 +tries=2 "@${resolver}" "${domain}" A 2>/dev/null | tail -1)" || rc=$?
+    # Недоступность ловится по коду возврата, а не по пустой строке: `dig
+    # +short` печатает ";; no servers could be reached" в stdout, и проверка на
+    # пустоту принимала это за неверный ответ.
+    if (( rc != 0 )) || [[ -z "${answer}" || "${answer}" == *"no servers could be reached"* ]]; then
+      unreachable=$((unreachable + 1))
+      warn "${resolver} не ответил."
+    elif [[ "${answer}" == "${EDGE_IPV4}" ]]; then
       ok=$((ok + 1))
     else
-      warn "${domain} через ${resolver} → '${answer:-нет ответа}', ожидался ${EDGE_IPV4}."
+      warn "${domain} через ${resolver} → '${answer}', ожидался ${EDGE_IPV4}."
     fi
   done
 
+  # Оба внешних резолвера молчат — почти всегда это провайдер режет исходящий
+  # UDP/53, а не проблема с записью. Спрашиваем системный: он менее надёжен как
+  # свидетель (может отдать из кеша), но отличает «DNS не настроен» от «до
+  # резолверов не достучаться».
+  if (( ok == 0 && unreachable == 2 )); then
+    answer="$(dig +short +time=4 "${domain}" A 2>/dev/null | tail -1 || true)"
+    if [[ "${answer}" == "${EDGE_IPV4}" ]]; then
+      warn "Внешние резолверы недоступны с этого узла — похоже, режется исходящий UDP/53."
+      warn "Системный резолвер отвечает верно: ${domain} → ${EDGE_IPV4}. Считаю запись корректной."
+      ok=2
+    fi
+  fi
+
   local aaaa
-  aaaa="$(dig +short +time=4 "@9.9.9.9" "${domain}" AAAA 2>/dev/null | tail -1)"
+  aaaa="$(dig +short +time=4 "@9.9.9.9" "${domain}" AAAA 2>/dev/null | tail -1 || true)"
   [[ -n "${aaaa}" ]] && warn "У ${domain} есть AAAA (${aaaa}). Клиенты пойдут по IPv6, которого на узле нет. Удалите запись."
 
   if (( ok < 2 )); then
