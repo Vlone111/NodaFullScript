@@ -340,6 +340,12 @@ print_instructions() {
           printf '    Security Layer ..... Inbound'\''s default\n'
           printf '    Fingerprint ........ chrome\n'
           printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
+        reality-xhttp-borrow)
+          printf '    SNI ................ %s   (донор, не наш домен)\n' "${BORROW_SNI}"
+          printf '    Path ............... %s\n' "${XHTTP_PATH}"
+          printf '    Security Layer ..... Inbound'\''s default\n'
+          printf '    Fingerprint ........ chrome\n'
+          printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
         reality-xhttp-steal)
           printf '    SNI ................ %s\n' "${DOMAINS[$v]}"
           printf '    Path ............... %s\n' "${XHTTP_PATH}"

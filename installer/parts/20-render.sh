@@ -124,6 +124,27 @@ render_xray_profile() {
             sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: true}
           }]')"
         ;;
+      reality-xhttp-borrow)
+        # То же, что xhttp-steal, но target и serverNames указывают на чужой
+        # донор, а не на локальный Caddy. Отсюда и главное свойство варианта:
+        # ни домена, ни сертификата не нужно вовсе.
+        inbounds="$(printf '%s' "${inbounds}" | jq \
+          --arg tag "${tag}" --arg sni "${BORROW_SNI}" --arg path "${XHTTP_PATH}" \
+          --arg pk "${REALITY_PRIVATE_KEY}" --arg sid "${REALITY_SHORT_ID}" \
+          --arg target "${BORROW_SNI}:443" \
+          --argjson port "${BACKEND_REALITY_XHTTP_BORROW}" '. + [{
+            tag: $tag, listen: "127.0.0.1", port: $port, protocol: "vless",
+            settings: {clients: [], decryption: "none", flow: ""},
+            streamSettings: {
+              network: "xhttp", security: "reality",
+              xhttpSettings: {path: $path, mode: "auto"},
+              realitySettings: {show: false, target: $target, xver: 0,
+                serverNames: [$sni], privateKey: $pk, shortIds: [$sid]},
+              sockopt: {acceptProxyProtocol: true}
+            },
+            sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: true}
+          }]')"
+        ;;
       xhttp-tls)
         inbounds="$(printf '%s' "${inbounds}" | jq \
           --arg tag "${tag}" --arg path "${XHTTP_PATH}" \
@@ -242,6 +263,11 @@ render_haproxy() {
       reality-xhttp-steal)
         acls+="    acl sni_${v//-/_} req.ssl_sni -i ${dom}"$'\n'
         routes+="    use_backend xray_reality_xhttp if sni_${v//-/_}"$'\n' ;;
+      reality-xhttp-borrow)
+        # Маршрутизируется по донорскому SNI, а не через default_backend:
+        # так вариант уживается с reality-tcp-steal, который default занимает.
+        acls+="    acl sni_${v//-/_} req.ssl_sni -i ${BORROW_SNI}"$'\n'
+        routes+="    use_backend xray_reality_xhttp_borrow if sni_${v//-/_}"$'\n' ;;
       tcp-tls)
         acls+="    acl sni_${v//-/_} req.ssl_sni -i ${dom}"$'\n'
         routes+="    use_backend xray_tcp_tls if sni_${v//-/_}"$'\n' ;;
@@ -331,6 +357,13 @@ EOF
 
 backend xray_reality_xhttp
     server xray_local 127.0.0.1:${BACKEND_REALITY_XHTTP} send-proxy-v2 check inter 5s fall 3 rise 2
+EOF
+    fi
+    if has_variant reality-xhttp-borrow; then
+      cat <<EOF
+
+backend xray_reality_xhttp_borrow
+    server xray_local 127.0.0.1:${BACKEND_REALITY_XHTTP_BORROW} send-proxy-v2 check inter 5s fall 3 rise 2
 EOF
     fi
     if has_variant tcp-tls; then

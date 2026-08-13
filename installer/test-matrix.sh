@@ -251,6 +251,9 @@ run_case 'reality-xhttp + tcp-tls'             reality-xhttp-steal tcp-tls
 run_case 'steal + xhttp + grpc + tcp-tls'      reality-tcp-steal xhttp-tls grpc-tls tcp-tls
 run_case 'всё кроме borrow'                    reality-tcp-steal reality-xhttp-steal xhttp-tls grpc-tls tcp-tls hysteria2
 run_case 'borrow + всё TLS + hysteria2'        reality-tcp-borrow xhttp-tls grpc-tls tcp-tls hysteria2
+run_case 'xhttp-borrow один'                  reality-xhttp-borrow
+run_case 'steal + xhttp-borrow'               reality-tcp-steal reality-xhttp-borrow
+run_case 'xhttp-borrow + xhttp-steal + h2'    reality-xhttp-borrow reality-xhttp-steal hysteria2
 
 printf '\nACME staging (Caddyfile должен остаться валидным)\n'
 SELECTED=(tcp-tls); declare -gA DOMAINS=([tcp-tls]=d1.example.net); SITE_DOMAIN=d1.example.net
