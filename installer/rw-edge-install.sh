@@ -2112,13 +2112,27 @@ print_instructions() {
       printf '    up{job="node"}\n\n'
       printf '  Ручной шаг ровно один — внешняя проба этой ноды с точки\n'
       printf '  наблюдения. Она отвечает на вопрос "видят ли клиенты" и сама\n'
-      printf '  не появится. В scrape-конфиг сервера мониторинга добавьте:\n\n'
+      printf '  не появится: нода умеет рассказать о себе изнутри, но не может\n'
+      printf '  проверить, видна ли она из интернета.\n\n'
+      printf '  Зайдите на сервер с Grafana и откройте scrape-конфиг vmagent\n'
+      printf '  (обычно /opt/rw-monitoring/vmagent/scrape.yml).\n\n'
+      printf '  ЕСЛИ джоб blackbox-tcp там УЖЕ ЕСТЬ — а он есть, как только\n'
+      printf '  заведена хотя бы одна нода — допишите в его static_configs\n'
+      printf '  ТОЛЬКО эти две строки, рядом с существующими целями:\n\n'
+      printf "        - targets: ['%s:443']\n" "${EDGE_IPV4}"
+      printf "          labels: { vantage: 'billing', target: '%s' }\n\n" "${NODE_CODE}"
+      printf '  Целиком блок ниже вставлять НЕЛЬЗЯ: получится второй job_name\n'
+      printf '  с тем же именем, а vmagent такой конфиг отвергает целиком —\n'
+      printf '  "duplicate job_name in scrape_configs". Перестанут собираться\n'
+      printf '  все метрики, а не только эта проба.\n\n'
+      printf '  ЕСЛИ джоба blackbox-tcp ещё нет (самая первая нода) — тогда\n'
+      printf '  вставьте блок целиком:\n\n'
       printf '    - job_name: blackbox-tcp\n'
       printf '      metrics_path: /probe\n'
       printf '      params: {module: [tcp_connect]}\n'
       printf '      static_configs:\n'
       printf "        - targets: ['%s:443']\n" "${EDGE_IPV4}"
-      printf '          labels: {vantage: billing, target: %s}\n' "${NODE_CODE}"
+      printf "          labels: { vantage: 'billing', target: '%s' }\n" "${NODE_CODE}"
       printf '      relabel_configs:\n'
       printf '        - source_labels: [__address__]\n'
       printf '          target_label: __param_target\n'
