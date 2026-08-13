@@ -40,7 +40,6 @@ readonly BACKEND_XHTTP_TLS=18444
 readonly BACKEND_REALITY_XHTTP=18445
 readonly BACKEND_TCP_TLS=18446
 readonly BACKEND_GRPC_TLS=18447
-readonly BACKEND_REALITY_XHTTP_BORROW=18448
 
 readonly DEFAULT_SITE_REPO='https://github.com/Vlone111/bitrail'
 readonly DEFAULT_SITE_REF='site-v2'
@@ -52,7 +51,6 @@ readonly -a VARIANTS=(
   'reality-tcp-steal|VLESS TCP + REALITY (self-steal, свой домен)|1|1|18443|vless'
   'reality-tcp-borrow|VLESS TCP + REALITY (чужой SNI-донор)|0|0|18443|vless'
   'reality-xhttp-steal|VLESS XHTTP + REALITY (self-steal)|1|1|18445|vless'
-  'reality-xhttp-borrow|VLESS XHTTP + REALITY (чужой SNI-донор, без домена)|0|0|18448|vless'
   'xhttp-tls|VLESS XHTTP + TLS (за Caddy)|1|1|18444|vless'
   'grpc-tls|VLESS gRPC + TLS (за Caddy)|1|1|18447|vless'
   'tcp-tls|VLESS TCP + TLS (Xray терминирует)|1|1|18446|vless'
@@ -352,23 +350,14 @@ ask_variants() {
 }
 
 validate_selection() {
-  local has_steal=0 has_borrow=0 has_xborrow=0 v
+  local has_steal=0 has_borrow=0 v
   for v in "${SELECTED[@]}"; do
-    [[ "${v}" == 'reality-tcp-steal'    ]] && has_steal=1
-    [[ "${v}" == 'reality-tcp-borrow'   ]] && has_borrow=1
-    [[ "${v}" == 'reality-xhttp-borrow' ]] && has_xborrow=1
+    [[ "${v}" == 'reality-tcp-steal'  ]] && has_steal=1
+    [[ "${v}" == 'reality-tcp-borrow' ]] && has_borrow=1
   done
 
   if (( has_steal == 1 && has_borrow == 1 )); then
     warn 'reality-tcp-steal и reality-tcp-borrow несовместимы: оба занимают один RAW-инбаунд и один default_backend HAProxy. Выберите один.'
-    return 1
-  fi
-
-  # Оба borrow-варианта предъявляют один и тот же донорский SNI, а маршрут по
-  # SNI может вести только в один бэкенд. Поддержка двух разных доноров
-  # добавила бы ещё один вопрос ради редкого случая.
-  if (( has_borrow == 1 && has_xborrow == 1 )); then
-    warn 'reality-tcp-borrow и reality-xhttp-borrow несовместимы: оба предъявляют один донорский SNI, а маршрут по нему может вести только в один бэкенд. Выберите один.'
     return 1
   fi
   return 0
@@ -427,11 +416,9 @@ ask_domains() {
   done
 
   local has_borrow=0
-  for v in "${SELECTED[@]}"; do
-    [[ "${v}" == 'reality-tcp-borrow' || "${v}" == 'reality-xhttp-borrow' ]] && has_borrow=1
-  done
+  for v in "${SELECTED[@]}"; do [[ "${v}" == 'reality-tcp-borrow' ]] && has_borrow=1; done
   if (( has_borrow == 1 )); then
-    printf '\n  Донорский SNI для borrow-варианта. Требования: TLS 1.3, X25519,\n'
+    printf '\n  Донорский SNI для reality-tcp-borrow. Требования: TLS 1.3, X25519,\n'
     printf '  чужой домен, не в РФ, стабильно доступен с этого узла.\n'
     while :; do
       BORROW_SNI="$(ask 'Домен-донор' 'www.samsung.com')"
@@ -670,27 +657,6 @@ render_xray_profile() {
             sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: true}
           }]')"
         ;;
-      reality-xhttp-borrow)
-        # То же, что xhttp-steal, но target и serverNames указывают на чужой
-        # донор, а не на локальный Caddy. Отсюда и главное свойство варианта:
-        # ни домена, ни сертификата не нужно вовсе.
-        inbounds="$(printf '%s' "${inbounds}" | jq \
-          --arg tag "${tag}" --arg sni "${BORROW_SNI}" --arg path "${XHTTP_PATH}" \
-          --arg pk "${REALITY_PRIVATE_KEY}" --arg sid "${REALITY_SHORT_ID}" \
-          --arg target "${BORROW_SNI}:443" \
-          --argjson port "${BACKEND_REALITY_XHTTP_BORROW}" '. + [{
-            tag: $tag, listen: "127.0.0.1", port: $port, protocol: "vless",
-            settings: {clients: [], decryption: "none", flow: ""},
-            streamSettings: {
-              network: "xhttp", security: "reality",
-              xhttpSettings: {path: $path, mode: "auto"},
-              realitySettings: {show: false, target: $target, xver: 0,
-                serverNames: [$sni], privateKey: $pk, shortIds: [$sid]},
-              sockopt: {acceptProxyProtocol: true}
-            },
-            sniffing: {enabled: true, destOverride: ["http","tls","quic"], routeOnly: true}
-          }]')"
-        ;;
       xhttp-tls)
         inbounds="$(printf '%s' "${inbounds}" | jq \
           --arg tag "${tag}" --arg path "${XHTTP_PATH}" \
@@ -809,11 +775,6 @@ render_haproxy() {
       reality-xhttp-steal)
         acls+="    acl sni_${v//-/_} req.ssl_sni -i ${dom}"$'\n'
         routes+="    use_backend xray_reality_xhttp if sni_${v//-/_}"$'\n' ;;
-      reality-xhttp-borrow)
-        # Маршрутизируется по донорскому SNI, а не через default_backend:
-        # так вариант уживается с reality-tcp-steal, который default занимает.
-        acls+="    acl sni_${v//-/_} req.ssl_sni -i ${BORROW_SNI}"$'\n'
-        routes+="    use_backend xray_reality_xhttp_borrow if sni_${v//-/_}"$'\n' ;;
       tcp-tls)
         acls+="    acl sni_${v//-/_} req.ssl_sni -i ${dom}"$'\n'
         routes+="    use_backend xray_tcp_tls if sni_${v//-/_}"$'\n' ;;
@@ -903,13 +864,6 @@ EOF
 
 backend xray_reality_xhttp
     server xray_local 127.0.0.1:${BACKEND_REALITY_XHTTP} send-proxy-v2 check inter 5s fall 3 rise 2
-EOF
-    fi
-    if has_variant reality-xhttp-borrow; then
-      cat <<EOF
-
-backend xray_reality_xhttp_borrow
-    server xray_local 127.0.0.1:${BACKEND_REALITY_XHTTP_BORROW} send-proxy-v2 check inter 5s fall 3 rise 2
 EOF
     fi
     if has_variant tcp-tls; then
@@ -2059,12 +2013,6 @@ print_instructions() {
           printf '    Security Layer ..... Inbound'\''s default\n'
           printf '    Fingerprint ........ chrome\n'
           printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
-        reality-xhttp-borrow)
-          printf '    SNI ................ %s   (донор, не наш домен)\n' "${BORROW_SNI}"
-          printf '    Path ............... %s\n' "${XHTTP_PATH}"
-          printf '    Security Layer ..... Inbound'\''s default\n'
-          printf '    Fingerprint ........ chrome\n'
-          printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
         reality-xhttp-steal)
           printf '    SNI ................ %s\n' "${DOMAINS[$v]}"
           printf '    Path ............... %s\n' "${XHTTP_PATH}"
@@ -2102,49 +2050,29 @@ print_instructions() {
 
     if [[ -f "${PRIVATE_DIR}/xray-json-template.json" ]]; then
       printf 'ШАГ 4. XRAY JSON TEMPLATE\n'
-      printf '  Шаблон отдаётся пользователю. Есть две рабочие схемы, выбор\n'
-      printf '  зависит от того, что вы продаёте.\n\n'
-      printf '  СХЕМА А — запись на страну (обычно нужна именно она)\n'
-      printf '    Свой шаблон и свой виртуальный Host на КАЖДУЮ ноду.\n'
-      printf '    Клиент видит список стран: %s, и так далее.\n' "${NODE_CODE}"
-      printf '    Внутри каждой записи балансировщик сам берёт лучший транспорт\n'
-      printf '    этой ноды. Страну выбирает пользователь — то, за что платят.\n\n'
-      printf '  СХЕМА Б — одна запись на весь флот\n'
-      printf '    Один шаблон и один виртуальный Host, в списке UUID хосты всех\n'
-      printf '    нод сразу. Клиент видит одну кнопку AUTO, балансировщик\n'
-      printf '    выбирает узел по пингу. Выбора страны у пользователя нет.\n\n'
-      printf '  Для этой ноды: Subscription -> Templates -> Xray JSON, вставить\n'
-      printf '    %s\n' "${PRIVATE_DIR}/xray-json-template.json"
-      printf '  и заменить плейсхолдеры на UUID созданных Hosts:\n'
-      local i=0 v
+      printf '  Subscription -> Templates -> Xray JSON -> создать и вставить:\n'
+      printf '    %s\n\n' "${PRIVATE_DIR}/xray-json-template.json"
+      printf '  Перед вставкой замените плейсхолдеры на UUID созданных Hosts:\n'
+      local n=0
       for v in "${SELECTED[@]}"; do
         [[ "${v}" == 'hysteria2' ]] && continue
-        i=$((i + 1))
-        printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${i}" "$(variant_tag "${v}")"
+        n=$((n + 1))
+        printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${n}" "$(variant_tag "${v}")"
       done
-      if has_variant hysteria2; then
-        printf '  Hysteria2 в шаблон не вписана. Если ваша Panel умеет её\n'
-        printf '  инжектить — допишите её UUID в тот же массив вручную.\n'
-      fi
-      printf '\n'
-      printf '  По схеме Б: НЕ заменяйте существующий шаблон, а допишите новые\n'
-      printf '  UUID в конец массива remnawave.injectHosts[0].selector.values.\n'
-      printf '  Замена шаблона или удаление UUID убирает хосты той ноды у всех\n'
-      printf '  клиентов молча — физические Hosts исключены из XRAY_JSON и видны\n'
-      printf '  только через шаблон.\n\n'
-      printf '  Проверка, что список полный:\n'
-      printf "    curl -s -A \"Happ/2.0\" \"<ссылка>\" | jq '[.. | .tag? // empty] | map(select(startswith(\"proxy\")))'\n\n"
+      printf '\n  UUID берётся из карточки Host, это не UUID пользователя.\n'
+      printf '  Шаблон уже содержит балансировщик leastPing по префиксу proxy,\n'
+      printf '  сплит RU-direct и блок bittorrent.\n\n'
 
       printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА\n'
-      printf '  По схеме А — свой на каждую ноду. По схеме Б — один на флот,\n'
-      printf '  и если он уже создан, шаг пропускается.\n\n'
-      printf '    Remark ............. %s\n' "${NODE_CODE}"
+      printf '  Создайте ещё один Host:\n'
+      printf '    Remark ............. %s_AUTO\n' "${NODE_CODE}"
       printf '    Inbound ............ %s\n' "$(variant_tag "${SELECTED[0]}")"
       printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
       printf '    Xray JSON Template . созданный на шаге 4\n'
       printf '    Exclude formats .... всё, КРОМЕ XRAY_JSON\n'
       printf '    Visible ............ да\n\n'
-
+      printf '  Физические Hosts исключены из XRAY_JSON намеренно: иначе клиент\n'
+      printf '  увидит их и отдельными записями, и внутри шаблона.\n\n'
     fi
 
     printf 'ШАГ 6. SUBSCRIPTION SETTINGS\n'

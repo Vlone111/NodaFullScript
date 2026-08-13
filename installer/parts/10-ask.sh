@@ -124,23 +124,14 @@ ask_variants() {
 }
 
 validate_selection() {
-  local has_steal=0 has_borrow=0 has_xborrow=0 v
+  local has_steal=0 has_borrow=0 v
   for v in "${SELECTED[@]}"; do
-    [[ "${v}" == 'reality-tcp-steal'    ]] && has_steal=1
-    [[ "${v}" == 'reality-tcp-borrow'   ]] && has_borrow=1
-    [[ "${v}" == 'reality-xhttp-borrow' ]] && has_xborrow=1
+    [[ "${v}" == 'reality-tcp-steal'  ]] && has_steal=1
+    [[ "${v}" == 'reality-tcp-borrow' ]] && has_borrow=1
   done
 
   if (( has_steal == 1 && has_borrow == 1 )); then
     warn 'reality-tcp-steal и reality-tcp-borrow несовместимы: оба занимают один RAW-инбаунд и один default_backend HAProxy. Выберите один.'
-    return 1
-  fi
-
-  # Оба borrow-варианта предъявляют один и тот же донорский SNI, а маршрут по
-  # SNI может вести только в один бэкенд. Поддержка двух разных доноров
-  # добавила бы ещё один вопрос ради редкого случая.
-  if (( has_borrow == 1 && has_xborrow == 1 )); then
-    warn 'reality-tcp-borrow и reality-xhttp-borrow несовместимы: оба предъявляют один донорский SNI, а маршрут по нему может вести только в один бэкенд. Выберите один.'
     return 1
   fi
   return 0
@@ -199,11 +190,9 @@ ask_domains() {
   done
 
   local has_borrow=0
-  for v in "${SELECTED[@]}"; do
-    [[ "${v}" == 'reality-tcp-borrow' || "${v}" == 'reality-xhttp-borrow' ]] && has_borrow=1
-  done
+  for v in "${SELECTED[@]}"; do [[ "${v}" == 'reality-tcp-borrow' ]] && has_borrow=1; done
   if (( has_borrow == 1 )); then
-    printf '\n  Донорский SNI для borrow-варианта. Требования: TLS 1.3, X25519,\n'
+    printf '\n  Донорский SNI для reality-tcp-borrow. Требования: TLS 1.3, X25519,\n'
     printf '  чужой домен, не в РФ, стабильно доступен с этого узла.\n'
     while :; do
       BORROW_SNI="$(ask 'Домен-донор' 'www.samsung.com')"

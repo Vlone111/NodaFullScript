@@ -40,7 +40,6 @@ readonly BACKEND_XHTTP_TLS=18444
 readonly BACKEND_REALITY_XHTTP=18445
 readonly BACKEND_TCP_TLS=18446
 readonly BACKEND_GRPC_TLS=18447
-readonly BACKEND_REALITY_XHTTP_BORROW=18448
 
 readonly DEFAULT_SITE_REPO='https://github.com/Vlone111/bitrail'
 readonly DEFAULT_SITE_REF='site-v2'
@@ -52,7 +51,6 @@ readonly -a VARIANTS=(
   'reality-tcp-steal|VLESS TCP + REALITY (self-steal, свой домен)|1|1|18443|vless'
   'reality-tcp-borrow|VLESS TCP + REALITY (чужой SNI-донор)|0|0|18443|vless'
   'reality-xhttp-steal|VLESS XHTTP + REALITY (self-steal)|1|1|18445|vless'
-  'reality-xhttp-borrow|VLESS XHTTP + REALITY (чужой SNI-донор, без домена)|0|0|18448|vless'
   'xhttp-tls|VLESS XHTTP + TLS (за Caddy)|1|1|18444|vless'
   'grpc-tls|VLESS gRPC + TLS (за Caddy)|1|1|18447|vless'
   'tcp-tls|VLESS TCP + TLS (Xray терминирует)|1|1|18446|vless'

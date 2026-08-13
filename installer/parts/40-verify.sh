@@ -340,12 +340,6 @@ print_instructions() {
           printf '    Security Layer ..... Inbound'\''s default\n'
           printf '    Fingerprint ........ chrome\n'
           printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
-        reality-xhttp-borrow)
-          printf '    SNI ................ %s   (донор, не наш домен)\n' "${BORROW_SNI}"
-          printf '    Path ............... %s\n' "${XHTTP_PATH}"
-          printf '    Security Layer ..... Inbound'\''s default\n'
-          printf '    Fingerprint ........ chrome\n'
-          printf '    ALPN ............... оставить ПУСТЫМ\n' ;;
         reality-xhttp-steal)
           printf '    SNI ................ %s\n' "${DOMAINS[$v]}"
           printf '    Path ............... %s\n' "${XHTTP_PATH}"
@@ -383,49 +377,29 @@ print_instructions() {
 
     if [[ -f "${PRIVATE_DIR}/xray-json-template.json" ]]; then
       printf 'ШАГ 4. XRAY JSON TEMPLATE\n'
-      printf '  Шаблон отдаётся пользователю. Есть две рабочие схемы, выбор\n'
-      printf '  зависит от того, что вы продаёте.\n\n'
-      printf '  СХЕМА А — запись на страну (обычно нужна именно она)\n'
-      printf '    Свой шаблон и свой виртуальный Host на КАЖДУЮ ноду.\n'
-      printf '    Клиент видит список стран: %s, и так далее.\n' "${NODE_CODE}"
-      printf '    Внутри каждой записи балансировщик сам берёт лучший транспорт\n'
-      printf '    этой ноды. Страну выбирает пользователь — то, за что платят.\n\n'
-      printf '  СХЕМА Б — одна запись на весь флот\n'
-      printf '    Один шаблон и один виртуальный Host, в списке UUID хосты всех\n'
-      printf '    нод сразу. Клиент видит одну кнопку AUTO, балансировщик\n'
-      printf '    выбирает узел по пингу. Выбора страны у пользователя нет.\n\n'
-      printf '  Для этой ноды: Subscription -> Templates -> Xray JSON, вставить\n'
-      printf '    %s\n' "${PRIVATE_DIR}/xray-json-template.json"
-      printf '  и заменить плейсхолдеры на UUID созданных Hosts:\n'
-      local i=0 v
+      printf '  Subscription -> Templates -> Xray JSON -> создать и вставить:\n'
+      printf '    %s\n\n' "${PRIVATE_DIR}/xray-json-template.json"
+      printf '  Перед вставкой замените плейсхолдеры на UUID созданных Hosts:\n'
+      local n=0
       for v in "${SELECTED[@]}"; do
         [[ "${v}" == 'hysteria2' ]] && continue
-        i=$((i + 1))
-        printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${i}" "$(variant_tag "${v}")"
+        n=$((n + 1))
+        printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${n}" "$(variant_tag "${v}")"
       done
-      if has_variant hysteria2; then
-        printf '  Hysteria2 в шаблон не вписана. Если ваша Panel умеет её\n'
-        printf '  инжектить — допишите её UUID в тот же массив вручную.\n'
-      fi
-      printf '\n'
-      printf '  По схеме Б: НЕ заменяйте существующий шаблон, а допишите новые\n'
-      printf '  UUID в конец массива remnawave.injectHosts[0].selector.values.\n'
-      printf '  Замена шаблона или удаление UUID убирает хосты той ноды у всех\n'
-      printf '  клиентов молча — физические Hosts исключены из XRAY_JSON и видны\n'
-      printf '  только через шаблон.\n\n'
-      printf '  Проверка, что список полный:\n'
-      printf "    curl -s -A \"Happ/2.0\" \"<ссылка>\" | jq '[.. | .tag? // empty] | map(select(startswith(\"proxy\")))'\n\n"
+      printf '\n  UUID берётся из карточки Host, это не UUID пользователя.\n'
+      printf '  Шаблон уже содержит балансировщик leastPing по префиксу proxy,\n'
+      printf '  сплит RU-direct и блок bittorrent.\n\n'
 
       printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА\n'
-      printf '  По схеме А — свой на каждую ноду. По схеме Б — один на флот,\n'
-      printf '  и если он уже создан, шаг пропускается.\n\n'
-      printf '    Remark ............. %s\n' "${NODE_CODE}"
+      printf '  Создайте ещё один Host:\n'
+      printf '    Remark ............. %s_AUTO\n' "${NODE_CODE}"
       printf '    Inbound ............ %s\n' "$(variant_tag "${SELECTED[0]}")"
       printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
       printf '    Xray JSON Template . созданный на шаге 4\n'
       printf '    Exclude formats .... всё, КРОМЕ XRAY_JSON\n'
       printf '    Visible ............ да\n\n'
-
+      printf '  Физические Hosts исключены из XRAY_JSON намеренно: иначе клиент\n'
+      printf '  увидит их и отдельными записями, и внутри шаблона.\n\n'
     fi
 
     printf 'ШАГ 6. SUBSCRIPTION SETTINGS\n'
