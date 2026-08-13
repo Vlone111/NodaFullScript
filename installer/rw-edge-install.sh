@@ -2101,30 +2101,48 @@ print_instructions() {
     done
 
     if [[ -f "${PRIVATE_DIR}/xray-json-template.json" ]]; then
-      printf 'ШАГ 4. XRAY JSON TEMPLATE\n'
-      printf '  Subscription -> Templates -> Xray JSON -> создать и вставить:\n'
+      printf 'ШАГ 4. XRAY JSON TEMPLATE — ОДИН НА ВЕСЬ ФЛОТ, НЕ НА НОДУ\n'
+      printf '  Шаблон получает пользователь, а не нода. Он один, сколько бы\n'
+      printf '  нод у вас ни было.\n\n'
+      printf '  ЕСЛИ ЭТО ПЕРВАЯ НОДА — Subscription -> Templates -> Xray JSON,\n'
+      printf '  создать и вставить:\n'
       printf '    %s\n\n' "${PRIVATE_DIR}/xray-json-template.json"
-      printf '  Перед вставкой замените плейсхолдеры на UUID созданных Hosts:\n'
-      local n=0
+      printf '  Заменить плейсхолдеры на UUID созданных Hosts:\n'
+      local i=0 v
       for v in "${SELECTED[@]}"; do
         [[ "${v}" == 'hysteria2' ]] && continue
-        n=$((n + 1))
-        printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${n}" "$(variant_tag "${v}")"
+        i=$((i + 1))
+        printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${i}" "$(variant_tag "${v}")"
       done
-      printf '\n  UUID берётся из карточки Host, это не UUID пользователя.\n'
-      printf '  Шаблон уже содержит балансировщик leastPing по префиксу proxy,\n'
-      printf '  сплит RU-direct и блок bittorrent.\n\n'
+      printf '\n'
+      printf '  ЕСЛИ ШАБЛОН УЖЕ ЕСТЬ (вторая и последующие ноды)\n'
+      printf '  НЕ создавайте второй и НЕ заменяйте существующий. Откройте его\n'
+      printf '  и допишите UUID новых хостов в конец массива:\n\n'
+      printf '    remnawave.injectHosts[0].selector.values\n\n'
+      printf '  Больше в шаблоне не меняйте ничего.\n\n'
+      printf '  Почему так: физические Hosts исключены из XRAY_JSON и видны\n'
+      printf '  клиенту ТОЛЬКО через шаблон. Создадите второй шаблон и назначите\n'
+      printf '  его — хосты первой ноды у клиентов просто исчезнут, молча, без\n'
+      printf '  единой ошибки в панели.\n\n'
+      printf '  Балансировщик leastPing работает по префиксу proxy и подхватит\n'
+      printf '  все вклеенные хосты сразу, с любого числа нод: клиент сам пойдёт\n'
+      printf '  через тот, до которого ближе.\n\n'
+      printf '  Проверить, что список полный:\n'
+      printf "    curl -s -A \"Happ/2.0\" \"<ссылка>\" | jq '[.outbounds[].tag]'\n"
+      printf '    Ожидаем proxy, proxy-2, ... по одному на каждый физический\n'
+      printf '    Host всех нод.\n\n'
 
-      printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА\n'
-      printf '  Создайте ещё один Host:\n'
-      printf '    Remark ............. %s_AUTO\n' "${NODE_CODE}"
+      printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА — ТОЖЕ ОДИН НА ФЛОТ\n'
+      printf '  Если такой Host уже создан для другой ноды — пропустите шаг,\n'
+      printf '  второй не нужен. Он лишь носитель шаблона, а шаблон общий.\n\n'
+      printf '  Для первой ноды создайте:\n'
+      printf '    Remark ............. AUTO\n'
       printf '    Inbound ............ %s\n' "$(variant_tag "${SELECTED[0]}")"
       printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
       printf '    Xray JSON Template . созданный на шаге 4\n'
       printf '    Exclude formats .... всё, КРОМЕ XRAY_JSON\n'
       printf '    Visible ............ да\n\n'
-      printf '  Физические Hosts исключены из XRAY_JSON намеренно: иначе клиент\n'
-      printf '  увидит их и отдельными записями, и внутри шаблона.\n\n'
+
     fi
 
     printf 'ШАГ 6. SUBSCRIPTION SETTINGS\n'
