@@ -1285,7 +1285,13 @@ EOF
   # node_exporter knows nothing about Docker: to it, a crashed Xray looks like
   # a perfectly healthy machine. cAdvisor would close that gap for 150-200 MB;
   # a cron script writing a textfile closes it for nothing.
+  # 0755 обязательно: в начале скрипта стоит umask 077, каталог получился бы
+  # drwx------, а node-exporter работает под nobody и читать его не может.
+  # Метрики при этом молча отсутствуют — в лог контейнера сыплется
+  # "failed to read textfile collector directory: permission denied",
+  # но снаружи это выглядит просто как их отсутствие.
   mkdir -p /var/lib/node_exporter/textfile
+  chmod 0755 /var/lib/node_exporter /var/lib/node_exporter/textfile
   cat >/usr/local/bin/rw-docker-textfile.sh <<'EOF'
 #!/usr/bin/env bash
 set -eu
