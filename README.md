@@ -10,11 +10,17 @@
 ## Быстрый старт
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/Vlone111/NodaFullScript/main/installer/rw-edge-install.sh)
+curl -fsSL -o /tmp/rw-edge-install.sh \
+  https://raw.githubusercontent.com/Vlone111/NodaFullScript/main/installer/rw-edge-install.sh
+bash /tmp/rw-edge-install.sh
 ```
 
-Именно через process substitution, а не `curl | bash`: скрипт задаёт вопросы, а
-в пайпе stdin занят самим скриптом.
+Двумя командами, а не одной: `curl | bash` не годится вовсе — скрипт задаёт
+вопросы, а в конвейере stdin занят самим скриптом. Подстановка процесса
+`bash <(curl ...)` эту проблему решает, но заводит другую: bash читает файл из
+FIFO по мере выполнения, и при обрыве чтения curl падает с `(23) Failure
+writing output to destination`, а bash остаётся с обрывком и виснет. Скачанный
+файл выполняется целиком и ни от чего не зависит.
 
 ## Что внутри
 

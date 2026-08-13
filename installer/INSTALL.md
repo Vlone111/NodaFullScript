@@ -1,14 +1,24 @@
 # Установка на новую ноду
 
-## Одной командой
+## Двумя командами
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/__YOUR_GITHUB__/rw-edge/main/rw-edge-install.sh)
+curl -fsSL -o /tmp/rw-edge-install.sh \
+  https://raw.githubusercontent.com/Vlone111/NodaFullScript/main/installer/rw-edge-install.sh
+bash /tmp/rw-edge-install.sh
 ```
 
-Работает именно так, а не через `curl | bash`: скрипт задаёт вопросы, а в
-пайпе stdin занят самим скриптом и ответы читать неоткуда. Здесь используется
-process substitution, а весь интерактив читается напрямую из `/dev/tty`.
+Скачать, потом выполнить. `curl | bash` не годится вовсе: скрипт задаёт
+вопросы, а в конвейере stdin занят самим скриптом. Подстановка процесса
+`bash <(curl ...)` эту проблему решает, но заводит свою — bash читает файл из
+FIFO по мере выполнения, и при обрыве чтения curl падает с `(23) Failure
+writing output to destination`, оставляя bash с обрывком скрипта.
+
+Проверить, что скачалось целиком:
+
+```sh
+bash -n /tmp/rw-edge-install.sh   # молчит — синтаксис цел
+```
 
 Скрипт кладёт свою копию в `/opt/rw-edge/rw-edge-install.sh`, поэтому после
 установки остаются доступны `verify`, `steps` и `rollback`:
@@ -20,8 +30,8 @@ process substitution, а весь интерактив читается напр
 ## Или клонированием
 
 ```sh
-git clone https://github.com/__YOUR_GITHUB__/rw-edge
-cd rw-edge
+git clone https://github.com/Vlone111/NodaFullScript
+cd NodaFullScript/installer
 ./rw-edge-install.sh
 ```
 
