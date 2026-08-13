@@ -231,7 +231,7 @@ verify_dns() {
 # код 9, и set -e убивал установку прямо на проверке DNS — притом что сама
 # проверка ничего не настраивает и права ронять установку не имеет.
 verify_one_domain() {
-  local domain="$1" resolver answer ok=0 unreachable=0
+  local domain="$1" resolver answer ok=0 unreachable=0 wrong=0
 
   local rc
   for resolver in 9.9.9.9 77.88.8.8; do
@@ -246,6 +246,7 @@ verify_one_domain() {
     elif [[ "${answer}" == "${EDGE_IPV4}" ]]; then
       ok=$((ok + 1))
     else
+      wrong=$((wrong + 1))
       warn "${domain} через ${resolver} → '${answer}', ожидался ${EDGE_IPV4}."
     fi
   done
@@ -267,12 +268,17 @@ verify_one_domain() {
   aaaa="$(dig +short +time=4 "@9.9.9.9" "${domain}" AAAA 2>/dev/null | tail -1 || true)"
   [[ -n "${aaaa}" ]] && warn "У ${domain} есть AAAA (${aaaa}). Клиенты пойдут по IPv6, которого на узле нет. Удалите запись."
 
-  if (( ok < 2 )); then
+  # Достаточно одного верного ответа при отсутствии неверных. Требование двух
+  # совпадений из двух означало, что недоступный с этого узла резолвер — а это
+  # обычное дело, провайдеры режут исходящий UDP/53 — заставлял подтверждать
+  # руками запись, которая на самом деле верна.
+  if (( ok >= 1 && wrong == 0 )); then
+    log "${domain} → ${EDGE_IPV4}"
+    (( unreachable > 0 )) && warn "Часть резолверов недоступна с этого узла, но доступные отвечают верно."
+  else
     if ! confirm "DNS для ${domain} ещё не сошёлся. Продолжить всё равно"; then
       die 'Дождитесь распространения DNS и запустите снова.'
     fi
-  else
-    log "${domain} → ${EDGE_IPV4}"
   fi
 }
 
