@@ -19,10 +19,23 @@ net.core.netdev_max_backlog = 16384
 
 # QUIC and Hysteria2 are userspace over UDP: the socket buffers are the
 # throughput ceiling, and the defaults are far too small for a 1 Gbit link.
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
+# 32 MB rather than 16: the bandwidth-delay product on a Russia-to-Europe path
+# at 100 ms exceeds what 16 MB can keep in flight, and the window stops growing
+# right where the link would have gone faster.
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
+
+# core.*mem_max only raises the ceiling a socket may ask for. TCP has its own
+# autotuning triple, and without raising it the ceiling above is never reached.
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 16384 33554432
+
+# UDP has no autotuning at all — these are floors, and the defaults are what
+# makes Hysteria2 drop packets under load on an otherwise idle link.
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
 
 # Many short-lived TLS connections.
 net.ipv4.tcp_fin_timeout = 20

@@ -11,6 +11,32 @@ render_client_template() {
     n=$((n + 1))
     sel+=("__HOST_UUID_${n}__")
   done
+
+  # Плюс один слот под FinalMask-дубль REALITY-хоста, если такой транспорт есть.
+  # Это отдельный Host в панели с тем же инбаундом, отличающийся только
+  # клиентским объектом FinalMask — сервер о нём не знает и знать не должен.
+  if has_variant reality-tcp-steal || has_variant reality-tcp-borrow; then
+    n=$((n + 1))
+    sel+=("__HOST_UUID_${n}__")
+    # Singular length/delay, не lengths/delays: на множественной форме ядро в
+    # Happ декодирует пустую length и падает с "LengthMin can't be 0".
+    cat >"${PRIVATE_DIR}/finalmask.json" <<'FMEOF'
+{
+  "tcp": [
+    {
+      "type": "fragment",
+      "settings": {
+        "packets": "tlshello",
+        "length": "10-20",
+        "delay": "0-2",
+        "maxSplit": "3-5"
+      }
+    }
+  ]
+}
+FMEOF
+    chmod 0644 "${PRIVATE_DIR}/finalmask.json"
+  fi
   (( n > 0 )) || return 0
 
   local values
@@ -52,6 +78,11 @@ render_client_template() {
       balancers: [{tag: "AUTO", selector: ["proxy"], fallbackTag: "proxy",
                    strategy: {type: "leastPing"}}],
       rules: [
+        # QUIC уходит в block, а не в proxy. Причина не в производительности:
+        # UDP-поток к чужому адресу мимо туннеля виден отдельно от TCP и сам по
+        # себе выделяет клиента. Браузеры при закрытом QUIC молча возвращаются
+        # на HTTP/2, пользователь разницы не замечает.
+        {type: "field", network: "udp", port: "443", outboundTag: "block"},
         {type: "field", protocol: ["bittorrent"], outboundTag: "direct"},
         {type: "field", network: "tcp,udp", port: "27015-27059,3478,4379-4380",
          outboundTag: "direct"},
@@ -365,9 +396,13 @@ print_instructions() {
         n=$((n + 1))
         printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${n}" "$(variant_tag "${v}")"
       done
+      if has_variant reality-tcp-steal || has_variant reality-tcp-borrow; then
+        printf '    __HOST_UUID_%d__  ->  UUID хоста ..._FRAGMENT (блок ниже)\n' \
+          "$(( ${#SELECTED[@]} + 1 ))"
+      fi
       printf '\n  UUID берётся из карточки Host, это не UUID пользователя.\n'
       printf '  Шаблон уже содержит балансировщик leastPing по префиксу proxy,\n'
-      printf '  сплит RU-direct и блок bittorrent.\n\n'
+      printf '  сплит RU-direct, блок bittorrent и блок исходящего QUIC.\n\n'
 
       printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА\n'
       printf '  Создайте ещё один Host:\n'
@@ -406,6 +441,46 @@ print_instructions() {
       printf '  UDP/443 просто не используется. Пароль в шаблон руками НЕ\n'
       printf '  вписывать: он поюзерный, одна учётка на всех обрушит учёт\n'
       printf '  трафика, HWID и отзыв доступа.\n\n'
+    fi
+
+    # Номер слота считается здесь заново, а не берётся из render_client_template:
+    # команда `steps` её не вызывает, и переменная была бы пустой.
+    local fm_src='' fm_slot=''
+    for v in "${SELECTED[@]}"; do
+      [[ "${v}" == 'reality-tcp-steal' || "${v}" == 'reality-tcp-borrow' ]] && fm_src="${v}"
+    done
+    [[ -n "${fm_src}" ]] && fm_slot=$(( ${#SELECTED[@]} + 1 ))
+
+    if [[ -n "${fm_slot}" && -f "${PRIVATE_DIR}/finalmask.json" ]]; then
+
+      printf 'ДОПОЛНИТЕЛЬНЫЙ HOST С FINALMASK\n'
+      printf '  Ещё один Host — точная копия %s,\n' "$(variant_tag "${fm_src}")"
+      printf '  отличающаяся ровно одним полем. Сервер о нём не знает: FinalMask\n'
+      printf '  живёт только на клиенте, в серверный профиль его вставлять\n'
+      printf '  НЕЛЬЗЯ.\n\n'
+      printf '    Remark ............. %s_FRAGMENT\n' "$(variant_tag "${fm_src}")"
+      printf '    Inbound ............ %s   (тот же самый)\n' "$(variant_tag "${fm_src}")"
+      printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
+      if [[ "${fm_src}" == 'reality-tcp-borrow' ]]; then
+        printf '    SNI ................ %s   (тот же донор)\n' "${BORROW_SNI}"
+      else
+        printf '    SNI ................ %s   (тот же домен)\n' "${DOMAINS[$fm_src]}"
+      fi
+      printf '    Fingerprint ........ chrome\n'
+      printf '    ALPN ............... оставить ПУСТЫМ\n'
+      printf '    Hidden ............. ДА\n'
+      printf '    Advanced -> FinalMask: вставить целиком содержимое\n'
+      printf '      %s\n\n' "${PRIVATE_DIR}/finalmask.json"
+      printf '    Его UUID идёт в шаблон под __HOST_UUID_%s__.\n\n' "${fm_slot}"
+      printf '  Зачем: FinalMask режет TLS ClientHello на куски с задержками,\n'
+      printf '  и рукопожатие перестаёт совпадать с сигнатурой, по которой его\n'
+      printf '  узнают. Отдельным хостом, а не поверх основного, потому что\n'
+      printf '  фрагментация иногда мешает самому REALITY: сервер не успевает\n'
+      printf '  опознать своего и молча уводит соединение на донора. Балансировщик\n'
+      printf '  держит оба пути и уйдёт на рабочий, если этот не отвечает.\n\n'
+      printf '  Проверить, что помогает, можно только из сети, где режут: если\n'
+      printf '  обычный REALITY там не поднимается, а FRAGMENT поднимается —\n'
+      printf '  значит работает. Со стороны сервера разницы не видно.\n\n'
     fi
 
     if monitoring_enabled; then

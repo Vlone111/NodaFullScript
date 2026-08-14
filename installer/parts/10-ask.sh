@@ -194,14 +194,62 @@ ask_domains() {
   if (( has_borrow == 1 )); then
     printf '\n  Донорский SNI для reality-tcp-borrow. Требования: TLS 1.3, X25519,\n'
     printf '  чужой домен, не в РФ, стабильно доступен с этого узла.\n'
-    while :; do
-      BORROW_SNI="$(ask 'Домен-донор' 'www.samsung.com')"
-      is_fqdn "${BORROW_SNI}" && break
-      warn 'Нужно полное доменное имя.'
-    done
+    printf '\n  Донор, до которого ЭТОТ узел ходит через другой IP или медленно,\n'
+    printf '  ломает REALITY тихо: клиент получит чужой сертификат вместо\n'
+    printf '  туннеля. Поэтому кандидаты замеряются отсюда, а не берутся на глаз.\n\n'
+    pick_borrow_donor
   else
     BORROW_SNI=''
   fi
+}
+
+# Проверяет донора с ЭТОГО узла: TLS 1.3, X25519 и время рукопожатия.
+# Донор на TLS 1.2 или отдающий P-256 для REALITY не годится — рукопожатие не
+# совпадёт с тем, что сервер пересылает, и соединение закончится чужим
+# сертификатом без единой ошибки в логе.
+probe_donor() {
+  local host="$1" out rc=0 t0 t1
+  t0="$(date +%s%N)"
+  out="$(echo | timeout 8 openssl s_client -connect "${host}:443" -servername "${host}" \
+        -tls1_3 2>/dev/null)" || rc=$?
+  t1="$(date +%s%N)"
+  (( rc != 0 )) && return 1
+  [[ "${out}" == *"TLSv1.3"* ]] || return 1
+  [[ "${out}" == *"X25519"* ]] || return 1
+  DONOR_LAST_MS=$(( (t1 - t0) / 1000000 ))
+  return 0
+}
+
+pick_borrow_donor() {
+  local -a candidates=('www.samsung.com' 'www.amd.com' 'www.tesla.com' 'dl.google.com')
+  local c best='' best_ms=99999 answer
+
+  info 'Замеряю кандидатов с этого узла...'
+  for c in "${candidates[@]}"; do
+    if probe_donor "${c}"; then
+      printf '    %-20s TLS1.3 + X25519, %s мс\n' "${c}" "${DONOR_LAST_MS}"
+      (( DONOR_LAST_MS < best_ms )) && { best="${c}"; best_ms="${DONOR_LAST_MS}"; }
+    else
+      printf '    %-20s не подходит\n' "${c}"
+    fi
+  done
+
+  if [[ -z "${best}" ]]; then
+    warn 'Ни один кандидат не прошёл. Вводите вручную и проверяйте сами.'
+  else
+    log "Лучший: ${best} (${best_ms} мс)"
+  fi
+
+  while :; do
+    answer="$(ask 'Домен-донор' "${best:-www.samsung.com}")"
+    is_fqdn "${answer}" || { warn 'Нужно полное доменное имя.'; continue; }
+    if [[ "${answer}" != "${best}" ]] && ! probe_donor "${answer}"; then
+      warn "${answer}: нет TLS 1.3 или X25519 с этого узла, для REALITY не годится."
+      confirm 'Всё равно использовать' || continue
+    fi
+    BORROW_SNI="${answer}"
+    break
+  done
 }
 
 verify_dns() {

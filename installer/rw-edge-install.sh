@@ -426,14 +426,62 @@ ask_domains() {
   if (( has_borrow == 1 )); then
     printf '\n  Донорский SNI для reality-tcp-borrow. Требования: TLS 1.3, X25519,\n'
     printf '  чужой домен, не в РФ, стабильно доступен с этого узла.\n'
-    while :; do
-      BORROW_SNI="$(ask 'Домен-донор' 'www.samsung.com')"
-      is_fqdn "${BORROW_SNI}" && break
-      warn 'Нужно полное доменное имя.'
-    done
+    printf '\n  Донор, до которого ЭТОТ узел ходит через другой IP или медленно,\n'
+    printf '  ломает REALITY тихо: клиент получит чужой сертификат вместо\n'
+    printf '  туннеля. Поэтому кандидаты замеряются отсюда, а не берутся на глаз.\n\n'
+    pick_borrow_donor
   else
     BORROW_SNI=''
   fi
+}
+
+# Проверяет донора с ЭТОГО узла: TLS 1.3, X25519 и время рукопожатия.
+# Донор на TLS 1.2 или отдающий P-256 для REALITY не годится — рукопожатие не
+# совпадёт с тем, что сервер пересылает, и соединение закончится чужим
+# сертификатом без единой ошибки в логе.
+probe_donor() {
+  local host="$1" out rc=0 t0 t1
+  t0="$(date +%s%N)"
+  out="$(echo | timeout 8 openssl s_client -connect "${host}:443" -servername "${host}" \
+        -tls1_3 2>/dev/null)" || rc=$?
+  t1="$(date +%s%N)"
+  (( rc != 0 )) && return 1
+  [[ "${out}" == *"TLSv1.3"* ]] || return 1
+  [[ "${out}" == *"X25519"* ]] || return 1
+  DONOR_LAST_MS=$(( (t1 - t0) / 1000000 ))
+  return 0
+}
+
+pick_borrow_donor() {
+  local -a candidates=('www.samsung.com' 'www.amd.com' 'www.tesla.com' 'dl.google.com')
+  local c best='' best_ms=99999 answer
+
+  info 'Замеряю кандидатов с этого узла...'
+  for c in "${candidates[@]}"; do
+    if probe_donor "${c}"; then
+      printf '    %-20s TLS1.3 + X25519, %s мс\n' "${c}" "${DONOR_LAST_MS}"
+      (( DONOR_LAST_MS < best_ms )) && { best="${c}"; best_ms="${DONOR_LAST_MS}"; }
+    else
+      printf '    %-20s не подходит\n' "${c}"
+    fi
+  done
+
+  if [[ -z "${best}" ]]; then
+    warn 'Ни один кандидат не прошёл. Вводите вручную и проверяйте сами.'
+  else
+    log "Лучший: ${best} (${best_ms} мс)"
+  fi
+
+  while :; do
+    answer="$(ask 'Домен-донор' "${best:-www.samsung.com}")"
+    is_fqdn "${answer}" || { warn 'Нужно полное доменное имя.'; continue; }
+    if [[ "${answer}" != "${best}" ]] && ! probe_donor "${answer}"; then
+      warn "${answer}: нет TLS 1.3 или X25519 с этого узла, для REALITY не годится."
+      confirm 'Всё равно использовать' || continue
+    fi
+    BORROW_SNI="${answer}"
+    break
+  done
 }
 
 verify_dns() {
@@ -1478,10 +1526,23 @@ net.core.netdev_max_backlog = 16384
 
 # QUIC and Hysteria2 are userspace over UDP: the socket buffers are the
 # throughput ceiling, and the defaults are far too small for a 1 Gbit link.
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
+# 32 MB rather than 16: the bandwidth-delay product on a Russia-to-Europe path
+# at 100 ms exceeds what 16 MB can keep in flight, and the window stops growing
+# right where the link would have gone faster.
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
+
+# core.*mem_max only raises the ceiling a socket may ask for. TCP has its own
+# autotuning triple, and without raising it the ceiling above is never reached.
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 16384 33554432
+
+# UDP has no autotuning at all — these are floors, and the defaults are what
+# makes Hysteria2 drop packets under load on an otherwise idle link.
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
 
 # Many short-lived TLS connections.
 net.ipv4.tcp_fin_timeout = 20
@@ -1728,6 +1789,32 @@ render_client_template() {
     n=$((n + 1))
     sel+=("__HOST_UUID_${n}__")
   done
+
+  # Плюс один слот под FinalMask-дубль REALITY-хоста, если такой транспорт есть.
+  # Это отдельный Host в панели с тем же инбаундом, отличающийся только
+  # клиентским объектом FinalMask — сервер о нём не знает и знать не должен.
+  if has_variant reality-tcp-steal || has_variant reality-tcp-borrow; then
+    n=$((n + 1))
+    sel+=("__HOST_UUID_${n}__")
+    # Singular length/delay, не lengths/delays: на множественной форме ядро в
+    # Happ декодирует пустую length и падает с "LengthMin can't be 0".
+    cat >"${PRIVATE_DIR}/finalmask.json" <<'FMEOF'
+{
+  "tcp": [
+    {
+      "type": "fragment",
+      "settings": {
+        "packets": "tlshello",
+        "length": "10-20",
+        "delay": "0-2",
+        "maxSplit": "3-5"
+      }
+    }
+  ]
+}
+FMEOF
+    chmod 0644 "${PRIVATE_DIR}/finalmask.json"
+  fi
   (( n > 0 )) || return 0
 
   local values
@@ -1769,6 +1856,11 @@ render_client_template() {
       balancers: [{tag: "AUTO", selector: ["proxy"], fallbackTag: "proxy",
                    strategy: {type: "leastPing"}}],
       rules: [
+        # QUIC уходит в block, а не в proxy. Причина не в производительности:
+        # UDP-поток к чужому адресу мимо туннеля виден отдельно от TCP и сам по
+        # себе выделяет клиента. Браузеры при закрытом QUIC молча возвращаются
+        # на HTTP/2, пользователь разницы не замечает.
+        {type: "field", network: "udp", port: "443", outboundTag: "block"},
         {type: "field", protocol: ["bittorrent"], outboundTag: "direct"},
         {type: "field", network: "tcp,udp", port: "27015-27059,3478,4379-4380",
          outboundTag: "direct"},
@@ -2082,9 +2174,13 @@ print_instructions() {
         n=$((n + 1))
         printf '    __HOST_UUID_%d__  ->  UUID хоста %s\n' "${n}" "$(variant_tag "${v}")"
       done
+      if has_variant reality-tcp-steal || has_variant reality-tcp-borrow; then
+        printf '    __HOST_UUID_%d__  ->  UUID хоста ..._FRAGMENT (блок ниже)\n' \
+          "$(( ${#SELECTED[@]} + 1 ))"
+      fi
       printf '\n  UUID берётся из карточки Host, это не UUID пользователя.\n'
       printf '  Шаблон уже содержит балансировщик leastPing по префиксу proxy,\n'
-      printf '  сплит RU-direct и блок bittorrent.\n\n'
+      printf '  сплит RU-direct, блок bittorrent и блок исходящего QUIC.\n\n'
 
       printf 'ШАГ 5. VIRTUAL HOST ДЛЯ ШАБЛОНА\n'
       printf '  Создайте ещё один Host:\n'
@@ -2123,6 +2219,46 @@ print_instructions() {
       printf '  UDP/443 просто не используется. Пароль в шаблон руками НЕ\n'
       printf '  вписывать: он поюзерный, одна учётка на всех обрушит учёт\n'
       printf '  трафика, HWID и отзыв доступа.\n\n'
+    fi
+
+    # Номер слота считается здесь заново, а не берётся из render_client_template:
+    # команда `steps` её не вызывает, и переменная была бы пустой.
+    local fm_src='' fm_slot=''
+    for v in "${SELECTED[@]}"; do
+      [[ "${v}" == 'reality-tcp-steal' || "${v}" == 'reality-tcp-borrow' ]] && fm_src="${v}"
+    done
+    [[ -n "${fm_src}" ]] && fm_slot=$(( ${#SELECTED[@]} + 1 ))
+
+    if [[ -n "${fm_slot}" && -f "${PRIVATE_DIR}/finalmask.json" ]]; then
+
+      printf 'ДОПОЛНИТЕЛЬНЫЙ HOST С FINALMASK\n'
+      printf '  Ещё один Host — точная копия %s,\n' "$(variant_tag "${fm_src}")"
+      printf '  отличающаяся ровно одним полем. Сервер о нём не знает: FinalMask\n'
+      printf '  живёт только на клиенте, в серверный профиль его вставлять\n'
+      printf '  НЕЛЬЗЯ.\n\n'
+      printf '    Remark ............. %s_FRAGMENT\n' "$(variant_tag "${fm_src}")"
+      printf '    Inbound ............ %s   (тот же самый)\n' "$(variant_tag "${fm_src}")"
+      printf '    Address / Port ..... %s / 443\n' "${EDGE_IPV4}"
+      if [[ "${fm_src}" == 'reality-tcp-borrow' ]]; then
+        printf '    SNI ................ %s   (тот же донор)\n' "${BORROW_SNI}"
+      else
+        printf '    SNI ................ %s   (тот же домен)\n' "${DOMAINS[$fm_src]}"
+      fi
+      printf '    Fingerprint ........ chrome\n'
+      printf '    ALPN ............... оставить ПУСТЫМ\n'
+      printf '    Hidden ............. ДА\n'
+      printf '    Advanced -> FinalMask: вставить целиком содержимое\n'
+      printf '      %s\n\n' "${PRIVATE_DIR}/finalmask.json"
+      printf '    Его UUID идёт в шаблон под __HOST_UUID_%s__.\n\n' "${fm_slot}"
+      printf '  Зачем: FinalMask режет TLS ClientHello на куски с задержками,\n'
+      printf '  и рукопожатие перестаёт совпадать с сигнатурой, по которой его\n'
+      printf '  узнают. Отдельным хостом, а не поверх основного, потому что\n'
+      printf '  фрагментация иногда мешает самому REALITY: сервер не успевает\n'
+      printf '  опознать своего и молча уводит соединение на донора. Балансировщик\n'
+      printf '  держит оба пути и уйдёт на рабочий, если этот не отвечает.\n\n'
+      printf '  Проверить, что помогает, можно только из сети, где режут: если\n'
+      printf '  обычный REALITY там не поднимается, а FRAGMENT поднимается —\n'
+      printf '  значит работает. Со стороны сервера разницы не видно.\n\n'
     fi
 
     if monitoring_enabled; then
